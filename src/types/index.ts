@@ -23,14 +23,12 @@ export interface HubSpotTokenData {
   user_id: number;
 }
 
-// src/types/index.ts - Update WixContact interface
-
 export interface WixContact {
   id: string;
   email?: string;
-  firstName?: string;
-  lastName?: string;
-  phone?: string;
+  firstName?: string | null;
+  lastName?: string | null;
+  phone?: string | null;
   company?: string;
   jobTitle?: string;
   address?: string;
@@ -42,9 +40,8 @@ export interface WixContact {
   website?: string;
   customFields?: Record<string, any>;
   version?: number;
-  [key: string]: any; // Keep for dynamic fields but will be filtered
+  [key: string]: any;
 }
-
 
 export interface HubSpotContact {
   id: string;
@@ -68,4 +65,27 @@ export interface UTMParams {
   page_url?: string;
   referrer?: string;
   timestamp?: string;
+}
+
+// NEW: Form submission type with attribution fields
+export interface FormSubmissionRecord {
+  id: string;
+  connectionId: string;
+  wixFormId: string;
+  wixFormName?: string;
+  hubSpotContactId: string;
+  formData: any;
+  utmParams: any;
+  submittedAt: Date;
+  syncedToHubSpot: boolean;
+  hubSpotSubmissionId?: string;
+  utmSource?: string;
+  utmMedium?: string;
+  utmCampaign?: string;
+  utmTerm?: string;
+  utmContent?: string;
+  pageUrl?: string;
+  referrer?: string;
+  leadStatus?: string;
+  leadScore?: number;
 }

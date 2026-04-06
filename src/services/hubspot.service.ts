@@ -42,8 +42,8 @@ export class HubSpotService {
     // (v3 was released Jan 2026 at api.hubspot.com/oauth/v3/token but v1
     // remains stable and is what existing stored tokens were issued against)
     const params = new URLSearchParams();
-    params.append('grant_type',    'refresh_token');
-    params.append('client_id',     process.env.HUBSPOT_CLIENT_ID!);
+    params.append('grant_type', 'refresh_token');
+    params.append('client_id', process.env.HUBSPOT_CLIENT_ID!);
     params.append('client_secret', process.env.HUBSPOT_CLIENT_SECRET!);
     params.append('refresh_token', refreshToken);
 
@@ -57,7 +57,7 @@ export class HubSpotService {
       );
       data = response.data;
     } catch (error: any) {
-      const status  = error?.response?.status;
+      const status = error?.response?.status;
       const message = error?.response?.data?.message || error?.response?.data?.error_description || error.message;
       throw new Error(
         `HubSpot token refresh failed (${status}): ${message}. ` +
@@ -68,12 +68,12 @@ export class HubSpotService {
     await prisma.hubSpotConnection.update({
       where: { id: connectionId },
       data: {
-        accessToken:  data.access_token,
+        accessToken: data.access_token,
         // HubSpot may or may not rotate the refresh token — persist whatever
         // is returned, falling back to the existing one if absent
         refreshToken: data.refresh_token ?? refreshToken,
-        expiresAt:    new Date(Date.now() + data.expires_in * 1000),
-        scope:        data.scope,
+        expiresAt: new Date(Date.now() + data.expires_in * 1000),
+        scope: data.scope,
       },
     });
 
@@ -135,8 +135,8 @@ export class HubSpotService {
         filterGroups: [{
           filters: [{
             propertyName: 'email',
-            operator:     'EQ',
-            value:        email,
+            operator: 'EQ',
+            value: email,
           }],
         }],
         // Always request the properties the sync service needs so they are
@@ -154,18 +154,38 @@ export class HubSpotService {
     email: string,
     contactData: Record<string, any>
   ): Promise<{ id: string; isNew: boolean }> {
-    const existingContact = await this.searchContactByEmail(connectionId, email);
+    try {
+      // ALWAYS search for existing contact by email FIRST
+      const existingContact = await this.searchContactByEmail(connectionId, email);
 
-    if (existingContact) {
-      await this.updateContact(connectionId, existingContact.id, contactData);
-      return { id: existingContact.id, isNew: false };
+      if (existingContact) {
+        // Contact exists - UPDATE it
+        console.log(`📝 Updating existing HubSpot contact: ${existingContact.id}`);
+        await this.updateContact(connectionId, existingContact.id, contactData);
+        return { id: existingContact.id, isNew: false };
+      }
+
+      // No existing contact - CREATE new one
+      console.log(`🆕 Creating new HubSpot contact for: ${email}`);
+      const newContact = await this.createContact(connectionId, {
+        ...contactData,
+        email,
+      });
+      return { id: newContact.id, isNew: true };
+
+    } catch (error: any) {
+      // Handle race condition: contact was created between search and create
+      if (error.response?.status === 409) {
+        const match = error.response?.data?.message?.match(/Existing ID: (\d+)/);
+        if (match) {
+          const existingId = match[1];
+          console.log(`📝 Contact created by another request, updating ID: ${existingId}`);
+          await this.updateContact(connectionId, existingId, contactData);
+          return { id: existingId, isNew: false };
+        }
+      }
+      throw error;
     }
-
-    const newContact = await this.createContact(connectionId, {
-      ...contactData,
-      email,
-    });
-    return { id: newContact.id, isNew: true };
   }
 
   async subscribeToWebhooks(
@@ -173,7 +193,7 @@ export class HubSpotService {
     portalId: string
   ): Promise<void> {
     const developerApiKey = process.env.HUBSPOT_DEVELOPER_API_KEY;
-    const appId           = process.env.HUBSPOT_APP_ID;
+    const appId = process.env.HUBSPOT_APP_ID;
 
     if (!developerApiKey) {
       console.error('❌ HUBSPOT_DEVELOPER_API_KEY not set. Webhook subscriptions skipped.');
@@ -188,10 +208,10 @@ export class HubSpotService {
     console.log(`📡 Setting up webhook subscriptions for portal ${portalId} with app ID ${appId}`);
 
     const subscriptions = [
-      { eventType: 'contact.creation',       active: true },
-      { eventType: 'contact.propertyChange', propertyName: 'email',     active: true },
+      { eventType: 'contact.creation', active: true },
+      { eventType: 'contact.propertyChange', propertyName: 'email', active: true },
       { eventType: 'contact.propertyChange', propertyName: 'firstname', active: true },
-      { eventType: 'contact.propertyChange', propertyName: 'lastname',  active: true },
+      { eventType: 'contact.propertyChange', propertyName: 'lastname', active: true },
     ];
 
     let existingSubscriptions: any[] = [];
@@ -207,7 +227,7 @@ export class HubSpotService {
 
     let successCount = 0;
     let skippedCount = 0;
-    let failCount    = 0;
+    let failCount = 0;
 
     for (const subscription of subscriptions) {
       // Parens around the ternary ensure && binds correctly — without them
@@ -270,7 +290,7 @@ export class HubSpotService {
   async testConnection(connectionId: string): Promise<boolean> {
     try {
       const accessToken = await this.getAccessToken(connectionId);
-      const response    = await axios.get(
+      const response = await axios.get(
         `${this.baseURL}/crm/v3/objects/contacts?limit=1`,
         { headers: { Authorization: `Bearer ${accessToken}` } }
       );
@@ -283,7 +303,7 @@ export class HubSpotService {
 
   async getWebhookSubscriptions(): Promise<any[]> {
     const developerApiKey = process.env.HUBSPOT_DEVELOPER_API_KEY;
-    const appId           = process.env.HUBSPOT_APP_ID;
+    const appId = process.env.HUBSPOT_APP_ID;
 
     if (!developerApiKey || !appId) {
       console.error('❌ HUBSPOT_DEVELOPER_API_KEY or HUBSPOT_APP_ID not set');

@@ -61,6 +61,7 @@ model FormSubmission {
   connectionId        String
   connection          HubSpotConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
   wixFormId           String
+  wixFormName         String?   // Added: Name of the Wix form
   hubSpotContactId    String
   formData            Json
   utmParams           Json
@@ -68,9 +69,25 @@ model FormSubmission {
   syncedToHubSpot     Boolean  @default(true)
   hubSpotSubmissionId String?
   
+  // Added: Individual UTM fields for querying and reporting
+  utmSource           String?
+  utmMedium           String?
+  utmCampaign         String?
+  utmTerm             String?
+  utmContent          String?
+  pageUrl             String?
+  referrer            String?
+  
+  // Added: Lead tracking fields
+  leadStatus          String?   @default("new")
+  leadScore           Int?      @default(0)
+  
   @@index([connectionId])
   @@index([submittedAt])
   @@index([hubSpotContactId])
+  @@index([utmSource])      // Added: For filtering by source
+  @@index([utmCampaign])    // Added: For filtering by campaign
+  @@index([leadStatus])     // Added: For filtering by lead status
 }
 
 model SyncLog {

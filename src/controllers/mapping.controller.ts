@@ -40,7 +40,7 @@ export class MappingController {
     try {
       const { instanceId } = req.params;
       const { updates } = req.body;
-      console.log({updates})
+      console.log({updates, body: req.body})
 
       const connection = await prisma.hubSpotConnection.findUnique({
         where: { wixInstanceId: instanceId, isConnected: true }

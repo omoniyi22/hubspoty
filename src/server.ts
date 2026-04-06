@@ -6,6 +6,7 @@ import dotenv from 'dotenv';
 import { AuthController } from './controllers/auth.controller';
 import { MappingController } from './controllers/mapping.controller';
 import { WebhookController } from './controllers/webhook.controller';
+import { SyncController } from './controllers/sync.controller';
 
 dotenv.config();
 
@@ -15,13 +16,13 @@ const PORT = process.env.PORT || 8000;
 // Middleware
 app.use(helmet());
 app.use(cors());
-app.use(express.json());
-// app.use(express.text());
+// app.use(express.json());
+app.use(express.text());
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100 // limit each IP to 100 requests per windowMs
+  max: 100
 });
 app.use('/api/', limiter);
 
@@ -29,8 +30,11 @@ app.use('/api/', limiter);
 const authController = new AuthController();
 const mappingController = new MappingController();
 const webhookController = new WebhookController();
+const syncController = new SyncController();
 
-// Auth routes
+// ============================================================
+// AUTH ROUTES
+// ============================================================
 app.get('/auth/hubspot', authController.initiateHubSpotAuth);
 app.get('/auth/hubspot/callback', authController.handleHubSpotCallback);
 app.get('/auth/hubspot/disconnect/:instanceId', authController.disconnectHubSpot);
@@ -137,35 +141,65 @@ app.get('/auth/error', (req, res) => {
   `);
 });
 
-// Field mapping routes
+// ============================================================
+// FIELD MAPPING ROUTES
+// ============================================================
 app.get('/api/mapping/:instanceId', mappingController.getFieldMapping);
 app.put('/api/mapping/:instanceId', mappingController.updateFieldMapping);
+app.get('/api/mapping/fields/:instanceId', mappingController.getAvailableFields);
 app.get('/api/fields', mappingController.getAvailableFields);
 
-// Wix webhook endpoints
+// ============================================================
+// SYNC LOGS & MONITORING ROUTES
+// ============================================================
+app.get('/api/sync/logs/:instanceId', syncController.getSyncLogs);
+app.get('/api/sync/logs/detail/:logId', syncController.getSyncLogById);
+app.get('/api/sync/contact/:instanceId/:contactId', syncController.getContactSyncHistory);
+app.get('/api/sync/status/:instanceId', syncController.getSyncStatus);
+app.get('/api/sync/failed/:instanceId', syncController.getFailedSyncs);
+app.delete('/api/sync/logs/clear/:instanceId', syncController.clearOldSyncLogs);
+
+// ============================================================
+// MANUAL SYNC OPERATIONS
+// ============================================================
+app.post('/api/sync/wix-to-hubspot/:instanceId', syncController.manualSyncWixToHubSpot);
+app.post('/api/sync/hubspot-to-wix/:instanceId', syncController.manualSyncHubSpotToWix);
+app.post('/api/sync/bulk/:instanceId', syncController.bulkSync);
+app.post('/api/sync/retry/:logId', syncController.retryFailedSync);
+
+// ============================================================
+// WEBHOOK ROUTES
+// ============================================================
 app.post('/webhook/wix/contact-created', webhookController.handleWixWebhook);
 app.post('/webhook/wix/contact-updated', webhookController.handleWixWebhook);
-app.post('/webhook/wix/form-submitted', webhookController.handleWixFormSubmitted);
-
-// HubSpot webhook endpoint
+app.post('/webhook/wix/form-submitted', webhookController.handleWixWebhook);
 app.post('/webhooks/hubspot/contact', webhookController.handleHubSpotWebhook);
 
-// Health check
+// ============================================================
+// HEALTH CHECK
+// ============================================================
 app.get('/health', (req, res) => {
-  console.log("hello world")
+  console.log("hello world");
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
-// Error handling middleware
+// ============================================================
+// ERROR HANDLING MIDDLEWARE
+// ============================================================
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-// Start server
+// ============================================================
+// START SERVER
+// ============================================================
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`\n📋 Sync Logs API: http://localhost:${PORT}/api/sync/logs/:instanceId`);
+  console.log(`📊 Sync Status API: http://localhost:${PORT}/api/sync/status/:instanceId`);
+  console.log(`🗺️ Field Mapping API: http://localhost:${PORT}/api/mapping/:instanceId`);
 });
 
 export default app;

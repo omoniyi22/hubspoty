@@ -1,12 +1,13 @@
-// src/controllers/auth.controller.ts
 import { Request, Response } from 'express';
 import axios from 'axios';
 import { prisma } from '../config/database';
 import { HubSpotService } from '../services/hubspot.service';
+import { MappingService } from '../services/mapping.service';
 import { HubSpotTokenData } from '../types';
 
 export class AuthController {
   private hubspotService = HubSpotService.getInstance();
+  private mappingService = MappingService.getInstance();
 
   initiateHubSpotAuth = (req: Request, res: Response) => {
     const wixInstanceId = req.query.instance_id as string;
@@ -42,8 +43,6 @@ export class AuthController {
     try {
       console.log('Exchanging code for HubSpot tokens...');
 
-      // FIX 1: Use v3 endpoint with params in the request BODY (not as query params).
-      // v1 used query params which leaked secrets into server logs.
       const params = new URLSearchParams();
       params.append('grant_type', 'authorization_code');
       params.append('client_id', process.env.HUBSPOT_CLIENT_ID!);
@@ -85,10 +84,12 @@ export class AuthController {
 
       console.log('HubSpot connection stored in DB with ID:', connection.id);
 
+      // Initialize default field mappings for this connection
+      await this.mappingService.initializeDefaultMappings(connection.id);
+      console.log('Default field mappings initialized');
+
       try {
         console.log('Subscribing to HubSpot webhooks...');
-        // FIX 2: subscribeToWebhooks now internally uses HUBSPOT_DEVELOPER_API_KEY,
-        // so we no longer need to pass the user's connectionId for auth here.
         await this.hubspotService.subscribeToWebhooks(connection.id, tokenData.hub_id.toString());
         console.log('Webhook subscription complete');
       } catch (webhookError) {

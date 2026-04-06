@@ -1,0 +1,95 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model HubSpotConnection {
+  id                String   @id @default(cuid())
+  wixInstanceId     String   @unique
+  hubSpotPortalId   String
+  accessToken       String
+  refreshToken      String
+  expiresAt         DateTime
+  scope             String
+  isConnected       Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+  
+  // Relations - This allows easy access to related data
+  fieldMapping      FieldMapping?
+  contactSyncs      ContactSync[]
+  formSubmissions   FormSubmission[]
+  syncLogs          SyncLog[]
+}
+
+model FieldMapping {
+  id                  String   @id @default(cuid())
+  connectionId        String   @unique
+  connection          HubSpotConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  mappings            Json
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+}
+
+model ContactSync {
+  id                  String   @id @default(cuid())
+  connectionId        String
+  connection          HubSpotConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  wixContactId        String
+  hubSpotContactId    String
+  lastSyncedAt        DateTime
+  lastSyncDirection   String
+  syncSource          String
+  correlationId       String   @unique
+  wixVersion          Int      @default(0)
+  hubSpotVersion      Int      @default(0)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  
+  @@unique([connectionId, wixContactId])
+  @@unique([connectionId, hubSpotContactId])
+  @@index([wixContactId])
+  @@index([hubSpotContactId])
+}
+
+model FormSubmission {
+  id                  String   @id @default(cuid())
+  connectionId        String
+  connection          HubSpotConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  wixFormId           String
+  hubSpotContactId    String
+  formData            Json
+  utmParams           Json
+  submittedAt         DateTime @default(now())
+  syncedToHubSpot     Boolean  @default(true)
+  hubSpotSubmissionId String?
+  
+  @@index([connectionId])
+  @@index([submittedAt])
+  @@index([hubSpotContactId])
+}
+
+model SyncLog {
+  id                  String   @id @default(cuid())
+  connectionId        String
+  connection          HubSpotConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  syncType            String
+  direction           String
+  status              String
+  wixContactId        String?
+  hubSpotContactId    String?
+  requestData         Json?
+  responseData        Json?
+  errorMessage        String?
+  correlationId       String
+  createdAt           DateTime @default(now())
+  
+  @@index([connectionId])
+  @@index([createdAt])
+  @@index([status])
+}

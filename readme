@@ -1,0 +1,15 @@
+package.json                 ~1.5 KB
+tsconfig.json               ~0.5 KB
+docker-compose.yml          ~0.6 KB
+Dockerfile                  ~0.3 KB
+.env                        ~0.3 KB
+prisma/schema.prisma        ~2.5 KB
+src/config/database.ts      ~0.4 KB
+src/controllers/auth.controller.ts     ~3.5 KB
+src/controllers/mapping.controller.ts  ~2.5 KB
+src/controllers/webhook.controller.ts  ~6 KB
+src/services/wix.service.ts            ~1.5 KB
+src/services/sync.service.ts           ~8 KB
+src/types/index.ts                     ~1.5 KB
+src/server.ts                          ~2.5 KB
+README.md                              ~2 KB

@@ -161,6 +161,7 @@ app.get('/api/sync/contact/:instanceId/:contactId', syncController.getContactSyn
 app.get('/api/sync/status/:instanceId', syncController.getSyncStatus);
 app.get('/api/sync/failed/:instanceId', syncController.getFailedSyncs);
 app.delete('/api/sync/logs/clear/:instanceId', syncController.clearOldSyncLogs);
+app.get('/api/auth/health/:instanceId', authController.checkTokenHealth);
 
 // ============================================================
 // MANUAL SYNC OPERATIONS

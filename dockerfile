@@ -1,5 +1,4 @@
-# Stage 1 — Build
-FROM node:18-alpine AS builder
+FROM node:18-alpine
 
 WORKDIR /app
 
@@ -9,10 +8,10 @@ COPY package*.json ./
 
 RUN npm ci
 
-COPY prisma ./prisma/
+COPY . .
 
 RUN npx prisma generate
 
-COPY . .
+EXPOSE 3000
 
-RUN npm run build
+CMD ["npx", "ts-node", "src/server.ts"]

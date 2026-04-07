@@ -1,17 +1,18 @@
+# Dockerfile
 FROM node:18-alpine
 
 WORKDIR /app
 
-RUN apk add --no-cache openssl
-
 COPY package*.json ./
+RUN npm ci --only=production
 
-RUN npm ci
+COPY prisma ./prisma/
+RUN npx prisma generate
 
 COPY . .
 
-RUN npx prisma generate
+RUN npm run build
 
 EXPOSE 3000
 
-CMD ["npx", "ts-node", "src/server.ts"]
+CMD ["npm", "start"]

@@ -3,6 +3,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import { FormController } from './controllers/form.controller';  // ADD THIS
+
 import { AuthController } from './controllers/auth.controller';
 import { MappingController } from './controllers/mapping.controller';
 import { WebhookController } from './controllers/webhook.controller';
@@ -31,6 +33,7 @@ const authController = new AuthController();
 const mappingController = new MappingController();
 const webhookController = new WebhookController();
 const syncController = new SyncController();
+const formController = new FormController();  // ADD THIS
 
 // ============================================================
 // AUTH ROUTES
@@ -178,6 +181,14 @@ app.post('/webhooks/hubspot/contact', webhookController.handleHubSpotWebhook);
 // ============================================================
 // HEALTH CHECK
 // ============================================================
+
+
+app.get('/api/forms/submissions/:instanceId', formController.getFormSubmissions);
+app.get('/api/forms/submissions/detail/:submissionId', formController.getFormSubmissionById);
+app.get('/api/forms/stats/:instanceId', formController.getFormStats);
+app.put('/api/forms/submissions/:submissionId/status', formController.updateLeadStatus);
+
+
 app.get('/health', (req, res) => {
   console.log("hello world");
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });

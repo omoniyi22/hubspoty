@@ -81,11 +81,11 @@ export class FormController {
           pagination: {
             page: Number(page),
             limit: Number(limit),
-            total,
-            totalPages: Math.ceil(total / Number(limit)),
+            total: Number(total),
+            totalPages: Math.ceil(Number(total) / Number(limit)),
           },
           stats: {
-            total,
+            total: Number(total),
             byStatus: stats.reduce((acc, curr) => {
               acc[curr.leadStatus || 'unknown'] = curr._count;
               return acc;
@@ -94,7 +94,7 @@ export class FormController {
               source: s.utmSource,
               campaign: s.utmCampaign,
               count: s._count,
-              totalScore: s._sum.leadScore || 0,
+              totalScore: Number(s._sum.leadScore || 0),
             })),
           },
         },
@@ -171,8 +171,8 @@ export class FormController {
       const sinceDate = new Date();
       sinceDate.setDate(sinceDate.getDate() - Number(days));
 
-      // Get submissions by day
-      const submissionsByDay = await prisma.$queryRaw`
+      // Get submissions by day - Convert BigInt to Number
+      const submissionsByDayRaw = await prisma.$queryRaw<any[]>`
         SELECT 
           DATE("submittedAt") as date,
           COUNT(*) as count,
@@ -186,6 +186,15 @@ export class FormController {
         ORDER BY date DESC
         LIMIT 30
       `;
+
+      // Convert BigInt values to Numbers
+      const submissionsByDay = submissionsByDayRaw.map(row => ({
+        date: row.date,
+        count: Number(row.count),
+        new_leads: Number(row.new_leads),
+        contacted: Number(row.contacted),
+        qualified: Number(row.qualified),
+      }));
 
       // Get top sources
       const topSources = await prisma.formSubmission.groupBy({
@@ -211,21 +220,26 @@ export class FormController {
         take: 10,
       });
 
+      // Get counts and convert to Number
+      const totalSubmissionsRaw = await prisma.formSubmission.count({ 
+        where: { connectionId: connection.id } 
+      });
+      
+      const last7DaysRaw = await prisma.formSubmission.count({
+        where: {
+          connectionId: connection.id,
+          submittedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
+        }
+      });
+
       res.json({
         success: true,
         data: {
           submissionsByDay,
           topSources: topSources.map(s => ({ source: s.utmSource, count: s._count })),
           topCampaigns: topCampaigns.map(s => ({ campaign: s.utmCampaign, count: s._count })),
-          totalSubmissions: await prisma.formSubmission.count({ 
-            where: { connectionId: connection.id } 
-          }),
-          last7Days: await prisma.formSubmission.count({
-            where: {
-              connectionId: connection.id,
-              submittedAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) }
-            }
-          }),
+          totalSubmissions: Number(totalSubmissionsRaw),
+          last7Days: Number(last7DaysRaw),
         },
       });
     } catch (error) {

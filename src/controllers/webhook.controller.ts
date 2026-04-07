@@ -13,7 +13,7 @@ import jwt from 'jsonwebtoken';
 // CONFIG
 // ─────────────────────────────────────────────
 const PUBLIC_KEY = process.env.WIX_PUBLIC_KEY?.replace(/\\n/g, '\n').trim() || '';
-const APP_ID = process.env.WIX_APP_ID
+const APP_ID = process.env.WIX_APP_ID || ''
 
 // ─────────────────────────────────────────────
 // LOGGER
@@ -100,9 +100,9 @@ export class WebhookController {
         }
       );
 
-      const data = await response.json();
-      const submission = data.submissions?.[0];
-      
+      const data :any = await response.json();
+      const submission: any = data.submissions?.[0];
+
       if (!submission) return null;
 
       const fields = submission.submissions ?? {};
@@ -120,13 +120,13 @@ export class WebhookController {
         contactId: submission.contactId,
         // UTM / Attribution - read from hidden form fields
         // Field keys depend on what the site owner named them
-        utmSource:   fields['utm_source']   ?? fields['utmSource']   ?? null,
-        utmMedium:   fields['utm_medium']   ?? fields['utmMedium']   ?? null,
+        utmSource: fields['utm_source'] ?? fields['utmSource'] ?? null,
+        utmMedium: fields['utm_medium'] ?? fields['utmMedium'] ?? null,
         utmCampaign: fields['utm_campaign'] ?? fields['utmCampaign'] ?? null,
-        utmTerm:     fields['utm_term']     ?? fields['utmTerm']     ?? null,
-        utmContent:  fields['utm_content']  ?? fields['utmContent']  ?? null,
-        pageUrl:     fields['page_url']     ?? fields['pageUrl']     ?? null,
-        referrer:    fields['referrer']     ?? null,
+        utmTerm: fields['utm_term'] ?? fields['utmTerm'] ?? null,
+        utmContent: fields['utm_content'] ?? fields['utmContent'] ?? null,
+        pageUrl: fields['page_url'] ?? fields['pageUrl'] ?? null,
+        referrer: fields['referrer'] ?? null,
         rawFields: fields, // Store all fields for debugging
       };
     } catch (error) {
@@ -149,20 +149,20 @@ export class WebhookController {
       const response = await fetch(
         `https://www.wixapis.com/contacts/v4/contacts/${contactId}`,
         {
-          headers: { 
+          headers: {
             'Authorization': accessToken,
             'Content-Type': 'application/json'
           },
         }
       );
-      
-      const data = await response.json();
+
+      const data: any = await response.json();
       const contact = data.contact;
-      
+
       if (!contact) return null;
-      
+
       const ext = contact.info?.extendedFields ?? {};
-      
+
       // Log all extended fields for debugging
       console.log('🔍 [Approach 2] Contact extended fields:', {
         extendedFieldKeys: Object.keys(ext),
@@ -174,13 +174,13 @@ export class WebhookController {
         name: contact.info?.name?.full,
         email: contact.primaryInfo?.email,
         // Try known extended field key patterns
-        utmSource:   ext['attribution.utmSource']   ?? ext['custom.utmSource']   ?? ext['utm_source'] ?? null,
-        utmMedium:   ext['attribution.utmMedium']   ?? ext['custom.utmMedium']   ?? ext['utm_medium'] ?? null,
+        utmSource: ext['attribution.utmSource'] ?? ext['custom.utmSource'] ?? ext['utm_source'] ?? null,
+        utmMedium: ext['attribution.utmMedium'] ?? ext['custom.utmMedium'] ?? ext['utm_medium'] ?? null,
         utmCampaign: ext['attribution.utmCampaign'] ?? ext['custom.utmCampaign'] ?? ext['utm_campaign'] ?? null,
-        utmTerm:     ext['attribution.utmTerm']     ?? ext['custom.utmTerm']     ?? ext['utm_term'] ?? null,
-        utmContent:  ext['attribution.utmContent']  ?? ext['custom.utmContent']  ?? ext['utm_content'] ?? null,
-        pageUrl:     ext['attribution.pageUrl']     ?? ext['custom.pageUrl']     ?? ext['page_url'] ?? null,
-        referrer:    ext['attribution.referrer']    ?? ext['custom.referrer']    ?? null,
+        utmTerm: ext['attribution.utmTerm'] ?? ext['custom.utmTerm'] ?? ext['utm_term'] ?? null,
+        utmContent: ext['attribution.utmContent'] ?? ext['custom.utmContent'] ?? ext['utm_content'] ?? null,
+        pageUrl: ext['attribution.pageUrl'] ?? ext['custom.pageUrl'] ?? ext['page_url'] ?? null,
+        referrer: ext['attribution.referrer'] ?? ext['custom.referrer'] ?? null,
         // Dump all extended fields for debugging
         _allExtendedFields: ext,
       };
@@ -200,7 +200,7 @@ export class WebhookController {
     wixInstanceId: string
   ): Promise<any> {
     console.log(`🔍 [Approach 3] Fetching attribution data for contact: ${contactId}`);
-    
+
     // Run both in parallel
     const [submissionData, contactData] = await Promise.allSettled([
       this.getFormSubmissionByContactId(contactId, accessToken, wixInstanceId),
@@ -208,7 +208,7 @@ export class WebhookController {
     ]);
 
     const submission = submissionData.status === 'fulfilled' ? submissionData.value : null;
-    const contact    = contactData.status === 'fulfilled'    ? contactData.value    : null;
+    const contact = contactData.status === 'fulfilled' ? contactData.value : null;
 
     console.log('📊 [Approach 3] Results:', {
       hasSubmissionData: !!submission,
@@ -221,17 +221,17 @@ export class WebhookController {
     return {
       contactId,
       contact: {
-        name:  contact?.name  ?? null,
+        name: contact?.name ?? null,
         email: contact?.email ?? null,
       },
       attribution: {
-        source:   submission?.utmSource   ?? contact?.utmSource   ?? null,
-        medium:   submission?.utmMedium   ?? contact?.utmMedium   ?? null,
+        source: submission?.utmSource ?? contact?.utmSource ?? null,
+        medium: submission?.utmMedium ?? contact?.utmMedium ?? null,
         campaign: submission?.utmCampaign ?? contact?.utmCampaign ?? null,
-        term:     submission?.utmTerm     ?? contact?.utmTerm     ?? null,
-        content:  submission?.utmContent  ?? contact?.utmContent  ?? null,
-        pageUrl:  submission?.pageUrl     ?? contact?.pageUrl     ?? null,
-        referrer: submission?.referrer    ?? contact?.referrer    ?? null,
+        term: submission?.utmTerm ?? contact?.utmTerm ?? null,
+        content: submission?.utmContent ?? contact?.utmContent ?? null,
+        pageUrl: submission?.pageUrl ?? contact?.pageUrl ?? null,
+        referrer: submission?.referrer ?? contact?.referrer ?? null,
       },
       _debug: {
         submissionId: submission?.submissionId,
@@ -331,7 +331,7 @@ export class WebhookController {
         submissionTime: formData.submissionTime,
       });
 
-      const connection = await prisma.hubSpotConnection.findFirst({
+      const connection: any = await prisma.hubSpotConnection.findFirst({
         where: { wixInstanceId: instanceId, isConnected: true },
       });
 
@@ -389,7 +389,7 @@ export class WebhookController {
       // ============================================================
       // USE ALL 3 APPROACHES TO GET UTM PARAMETERS
       // ============================================================
-      let attributionData = null;
+      let attributionData: any = null;
       let utmParams = {
         utm_source: null,
         utm_medium: null,
@@ -411,7 +411,7 @@ export class WebhookController {
         utmParams.utm_content = formData.utm_content || formData.utmContent;
         utmParams.page_url = formData.pageUrl || formData.url;
         utmParams.referrer = formData.referrer;
-        
+
         console.log('📊 [Direct] UTM from form event:', utmParams);
       }
 
@@ -423,7 +423,7 @@ export class WebhookController {
             connection.wixAccessToken,
             instanceId
           );
-          
+
           if (attributionData?.attribution) {
             // Merge: direct fields take precedence, then attribution data
             utmParams = {
@@ -437,7 +437,7 @@ export class WebhookController {
               timestamp: new Date().toISOString(),
               wix_contact_id: formData.contactId,
             };
-            
+
             console.log('📊 [Combined] UTM after merging approaches:', utmParams);
           }
         } catch (error) {
@@ -466,7 +466,7 @@ export class WebhookController {
 
       // Check if contact already exists
       let wixContactId = formData.contactId;
-      let existingSync = null;
+      let existingSync: any = null;
 
       if (wixContactId) {
         existingSync = await prisma.contactSync.findFirst({
@@ -585,7 +585,7 @@ export class WebhookController {
         contactId,
       });
 
-      const connection = await prisma.hubSpotConnection.findFirst({
+      const connection: any = await prisma.hubSpotConnection.findFirst({
         where: { wixInstanceId: instanceId, isConnected: true },
       });
 
@@ -602,15 +602,15 @@ export class WebhookController {
       const isFromWixForms = contact.source?.sourceType === 'WIX_FORMS';
       const isFormActivity = contact.lastActivity?.activityType === 'FORM_SUBMITTED';
       const isFormDescription = contact.lastActivity?.description === 'Submitted a form' ||
-                                contact.lastActivity?.description?.toLowerCase().includes('form');
+        contact.lastActivity?.description?.toLowerCase().includes('form');
       const hasFormIcon = contact.lastActivity?.icon?.name === 'WixForms';
       const isFromForm = isFromWixForms || isFormActivity || isFormDescription || hasFormIcon;
 
       // ============================================================
       // USE ALL 3 APPROACHES TO GET UTM DATA
       // ============================================================
-      let attributionData = null;
-      
+      let attributionData: any = null;
+
       if (contactId && connection.wixAccessToken) {
         try {
           attributionData = await this.getCombinedAttributionData(
@@ -618,7 +618,7 @@ export class WebhookController {
             connection.wixAccessToken,
             instanceId
           );
-          
+
           console.log('📊 [Contact Event] Attribution data retrieved:', {
             hasAttribution: !!attributionData,
             utmSource: attributionData?.attribution?.source,

@@ -16,7 +16,7 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 // CONFIG
 // ─────────────────────────────────────────────
 const PUBLIC_KEY = process.env.WIX_PUBLIC_KEY?.replace(/\\n/g, '\n').trim() || '';
-const APP_ID = process.env.WIX_APP_ID;
+const APP_ID = process.env.WIX_APP_ID || '';
 // ─────────────────────────────────────────────
 // LOGGER
 // ─────────────────────────────────────────────

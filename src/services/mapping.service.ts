@@ -62,7 +62,7 @@ export class MappingService {
     current.mappings.forEach(m => mappingMap.set(m.wixField, m));
     
     for (const update of updates) {
-      const existing = mappingMap.get(update.wixField);
+      const existing: any = mappingMap.get(update.wixField);
       if (existing) {
         if (update.direction !== undefined) {
           existing.direction = update.direction as any;

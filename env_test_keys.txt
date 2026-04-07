@@ -3,7 +3,7 @@ HUBSPOT_APP_ID=35749449
 DATABASE_URL="postgresql://neondb_owner:npg_Oxpiv3CaPf1j@ep-soft-sun-anfhlyal.c-6.us-east-1.aws.neon.tech/neondb?sslmode=require"
 HUBSPOT_CLIENT_ID=6e555a0b-bdea-4442-8a58-3759f22d2f95
 HUBSPOT_CLIENT_SECRET=58d935e8-5433-481e-90a5-1591373e728f
-HUBSPOT_REDIRECT_URI="http://localhost:8000/auth/hubspot/callback"
+HUBSPOT_REDIRECT_URI="https://hubspoty.onrender.com/auth/hubspot/callback"
 WIX_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArnYfRtJDUP1yqnQhnvq0\nCGKDdDuJPWx9jHl/PSTwb0yN8nyv9IW19DijXgWAcR0S5kHs41bFtPQAsM+BYTTE\nAMaIdA3x0Onf2kUQlLQvl3W45mk8bff0OGHMcVkWdwUVe2PFwZs6bsRBzj/x8TJ/\nu7w+2tOB5VNSaTv5J8tDJlferrs6pySR8pwIZ1i72FU3qYg6mE9DVXcSPH0wRqET\n3MzWqWugcCiVW9dCqHb6Uv0wi1zc3twXZIuXj/JqUxN2X+jSvomBKZZ2C+iw7S9b\nHpCfgnJvMdHxayDR1gxw6HOXUNWXhnqCIHg7tV2wY5AvqH9170QBpPqRml8RxjOz\nCQIDAQAB\n-----END PUBLIC KEY-----"
 # WIX_CLIENT_ID=ea318cac-5677-4203-b4f7-2b073b0b352a
 # .env - Single line PUBLIC_KEY

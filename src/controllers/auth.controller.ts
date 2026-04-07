@@ -18,14 +18,15 @@ export class AuthController {
       return res.status(400).json({ error: 'Missing instance_id' });
     }
 
+    // Updated to use EU1 endpoint with all required scopes including external_integrations.forms.access
     const authUrl =
-      `https://app.hubspot.com/oauth/authorize?` +
+      `https://app-eu1.hubspot.com/oauth/authorize?` +
       `client_id=${process.env.HUBSPOT_CLIENT_ID}` +
       `&redirect_uri=${encodeURIComponent(process.env.HUBSPOT_REDIRECT_URI!)}` +
-      `&scope=crm.objects.contacts.write%20crm.schemas.contacts.write%20oauth%20forms-uploaded-files%20forms%20crm.schemas.contacts.read%20crm.objects.contacts.read` +
+      `&scope=${encodeURIComponent('crm.objects.contacts.write crm.schemas.contacts.write external_integrations.forms.access oauth forms-uploaded-files forms crm.schemas.contacts.read crm.objects.contacts.read')}` +
       `&state=${wixInstanceId}`;
 
-    console.log('Redirecting user to HubSpot auth URL');
+    console.log('Redirecting user to HubSpot auth URL:', authUrl);
     res.redirect(authUrl);
   };
 
@@ -59,7 +60,8 @@ export class AuthController {
       const tokenData: HubSpotTokenData = response.data;
       console.log('Received token data for portal:', tokenData.hub_id);
 
-      const scope = tokenData.scope || 'crm.objects.contacts.read crm.objects.contacts.write';
+      // Store the full scope including external_integrations.forms.access
+      const scope = tokenData.scope || 'crm.objects.contacts.read crm.objects.contacts.write crm.schemas.contacts.read crm.schemas.contacts.write external_integrations.forms.access oauth forms-uploaded-files forms';
 
       const connection = await prisma.hubSpotConnection.upsert({
         where: { wixInstanceId: wixInstanceId as string },
@@ -109,6 +111,11 @@ export class AuthController {
         errorMessage = error.message;
       }
 
+      // Log detailed error for debugging
+      if (error.response?.data) {
+        console.error('OAuth error details:', JSON.stringify(error.response.data, null, 2));
+      }
+
       res.redirect(
         `/auth/error?error=oauth_failed&error_description=${encodeURIComponent(errorMessage)}`
       );
@@ -120,9 +127,40 @@ export class AuthController {
     console.log('Disconnecting HubSpot for instance:', instanceId);
 
     try {
+      // Get the connection to revoke the token
+      const connection = await prisma.hubSpotConnection.findUnique({
+        where: { wixInstanceId: instanceId }
+      });
+
+      if (connection && connection.accessToken) {
+        try {
+          // Revoke the access token
+          await axios.post(
+            'https://api.hubapi.com/oauth/v3/revoke',
+            new URLSearchParams({
+              token: connection.accessToken
+            }),
+            {
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Authorization': `Bearer ${connection.accessToken}`
+              }
+            }
+          );
+          console.log('HubSpot token revoked successfully');
+        } catch (revokeError) {
+          console.warn('Failed to revoke token (may already be invalid):', revokeError);
+        }
+      }
+
       await prisma.hubSpotConnection.update({
         where: { wixInstanceId: instanceId },
-        data: { isConnected: false }
+        data: { 
+          isConnected: false,
+          accessToken: null,
+          refreshToken: null,
+          expiresAt: null
+        }
       });
 
       console.log('HubSpot disconnected successfully');
@@ -137,21 +175,88 @@ export class AuthController {
     const { instanceId } = req.params;
     console.log('Fetching HubSpot connection status for instance:', instanceId);
 
-    const connection = await prisma.hubSpotConnection.findUnique({
-      where: { wixInstanceId: instanceId },
-      include: { fieldMapping: true }
-    });
+    try {
+      const connection = await prisma.hubSpotConnection.findUnique({
+        where: { wixInstanceId: instanceId },
+        include: { fieldMapping: true }
+      });
 
-    if (!connection || !connection.isConnected) {
-      console.log('No active HubSpot connection found');
-      return res.json({ connected: false });
+      if (!connection || !connection.isConnected) {
+        console.log('No active HubSpot connection found');
+        return res.json({ connected: false });
+      }
+
+      // Check if token is expired and needs refresh
+      if (connection.expiresAt && new Date() >= connection.expiresAt) {
+        console.log('Token expired, attempting to refresh...');
+        try {
+          const refreshed = await this.refreshAccessToken(connection.id, connection.refreshToken!);
+          if (refreshed) {
+            // Re-fetch connection after refresh
+            const updatedConnection = await prisma.hubSpotConnection.findUnique({
+              where: { wixInstanceId: instanceId },
+              include: { fieldMapping: true }
+            });
+            
+            if (updatedConnection) {
+              return res.json({
+                connected: true,
+                portalId: updatedConnection.hubSpotPortalId,
+                mapping: updatedConnection.fieldMapping?.mappings || null
+              });
+            }
+          }
+        } catch (refreshError) {
+          console.error('Token refresh failed:', refreshError);
+          return res.json({ connected: false, error: 'Token expired and refresh failed' });
+        }
+      }
+
+      console.log('HubSpot connection is active for portal:', connection.hubSpotPortalId);
+      res.json({
+        connected: true,
+        portalId: connection.hubSpotPortalId,
+        mapping: connection.fieldMapping?.mappings || null,
+        scope: connection.scope
+      });
+    } catch (error) {
+      console.error('Error checking connection status:', error);
+      res.status(500).json({ error: 'Failed to check connection status' });
     }
+  };
 
-    console.log('HubSpot connection is active for portal:', connection.hubSpotPortalId);
-    res.json({
-      connected: true,
-      portalId: connection.hubSpotPortalId,
-      mapping: connection.fieldMapping?.mappings || null
-    });
+  private refreshAccessToken = async (connectionId: number, refreshToken: string): Promise<boolean> => {
+    try {
+      console.log('Refreshing HubSpot access token...');
+      
+      const params = new URLSearchParams();
+      params.append('grant_type', 'refresh_token');
+      params.append('client_id', process.env.HUBSPOT_CLIENT_ID!);
+      params.append('client_secret', process.env.HUBSPOT_CLIENT_SECRET!);
+      params.append('refresh_token', refreshToken);
+
+      const response = await axios.post(
+        'https://api.hubapi.com/oauth/v3/token',
+        params,
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+      );
+
+      const tokenData: HubSpotTokenData = response.data;
+
+      await prisma.hubSpotConnection.update({
+        where: { id: connectionId },
+        data: {
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token || refreshToken,
+          expiresAt: new Date(Date.now() + tokenData.expires_in * 1000)
+        }
+      });
+
+      console.log('Access token refreshed successfully');
+      return true;
+    } catch (error) {
+      console.error('Failed to refresh access token:', error);
+      return false;
+    }
   };
 }

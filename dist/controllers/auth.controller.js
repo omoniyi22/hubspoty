@@ -22,7 +22,7 @@ class AuthController {
             const authUrl = `https://app.hubspot.com/oauth/authorize?` +
                 `client_id=${process.env.HUBSPOT_CLIENT_ID}` +
                 `&redirect_uri=${encodeURIComponent(process.env.HUBSPOT_REDIRECT_URI)}` +
-                `&scope=crm.objects.contacts.write%20crm.schemas.contacts.write%20oauth%20forms-uploaded-files%20forms%20crm.schemas.contacts.read%20crm.objects.contacts.read` +
+                `&scope=crm.objects.contacts.write+crm.schemas.contacts.write+external_integrations.forms.access+oauth+forms-uploaded-files+forms+crm.schemas.contacts.read+crm.objects.contacts.read` +
                 `&state=${wixInstanceId}`;
             console.log('Redirecting user to HubSpot auth URL');
             res.redirect(authUrl);

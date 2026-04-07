@@ -43,12 +43,9 @@ export class WixService {
     const appId     = process.env.WIX_APP_ID;
     const appSecret = process.env.WIX_APP_SECRET;
 
-    // ─── Credential pre-flight check ────────────────────────────────────────
     console.log('[WixAuth] 🔎 Credential check', {
       WIX_APP_ID_set:     !!appId,
       WIX_APP_SECRET_set: !!appSecret,
-      // Print partial values so you can confirm they match the Dev Center
-      // without exposing the full secret in logs
       WIX_APP_ID_preview:     appId     ? `${appId.slice(0, 8)}...${appId.slice(-4)}`     : 'MISSING',
       WIX_APP_SECRET_preview: appSecret ? `${appSecret.slice(0, 8)}...${appSecret.slice(-4)}` : 'MISSING',
       instanceId,
@@ -58,11 +55,6 @@ export class WixService {
       console.error('[WixAuth] ❌ Missing environment variables — set WIX_APP_ID and WIX_APP_SECRET in your .env');
       throw new Error('WIX_APP_ID or WIX_APP_SECRET environment variable is not set');
     }
-
-    // ─── Build request body ──────────────────────────────────────────────────
-    // Wix docs confirm Content-Type: application/json with a standard JSON body.
-    // The 400 "getBy.app is invalid" error means the credentials are wrong,
-    // NOT a Content-Type issue.
 
     let connectionInfo = await prisma.hubSpotConnection.findUnique({
       where: { id: instanceId }
@@ -82,14 +74,13 @@ export class WixService {
       grant_type:  requestBody.grant_type,
       client_id:   requestBody.client_id,
       instance_id: requestBody.instance_id,
-      // Never log client_secret in full — just confirm it's present
       client_secret_length: appSecret.length,
     });
 
     try {
       const response = await axios.post(this.oauthBaseURL, requestBody, {
         headers: {
-          'Content-Type': 'application/json',  // ✅ Confirmed correct per Wix docs
+          'Content-Type': 'application/json',
         },
       });
 
@@ -100,8 +91,6 @@ export class WixService {
         expiresIn:      response.data?.expires_in,
       });
 
-      // Wix may wrap response in a body string for raw HTTP callers;
-      // handle both direct and wrapped shapes
       const tokenData =
         typeof response.data?.body === 'string'
           ? JSON.parse(response.data.body)
@@ -130,7 +119,6 @@ export class WixService {
       return accessToken;
 
     } catch (err: any) {
-      // ─── Detailed auth failure diagnosis ──────────────────────────────────
       const fieldViolations =
         err?.response?.data?.details?.validationError?.fieldViolations ?? [];
 
@@ -138,7 +126,7 @@ export class WixService {
         status:          err?.response?.status,
         statusText:      err?.response?.statusText,
         wixMessage:      err?.response?.data?.message,
-        fieldViolations, // <-- tells you exactly which field Wix rejected
+        fieldViolations,
         diagnosis:       fieldViolations.some((v: any) => v.field === 'getBy.app')
           ? '🚨 "getBy.app is invalid" = your WIX_APP_ID or WIX_APP_SECRET do not match any app in the Wix Dev Center. Check your .env against https://dev.wix.com/apps'
           : 'Check wixDetails for the specific validation failure',
@@ -146,7 +134,7 @@ export class WixService {
           grant_type:    requestBody.grant_type,
           client_id:     requestBody.client_id,
           instance_id:   requestBody.instance_id,
-          client_secret: `${appSecret.slice(0, 8)}...${appSecret.slice(-4)}` // partial only
+          client_secret: `${appSecret.slice(0, 8)}...${appSecret.slice(-4)}`
         },
         requestId: err?.response?.headers?.['x-wix-request-id'],
       });
@@ -164,7 +152,7 @@ export class WixService {
   }
 
   // ---------------------------------------------------------------------------
-  // Contacts CRUD  (Wix Contacts v4)
+  // Contacts CRUD (Wix Contacts v4)
   // ---------------------------------------------------------------------------
 
   async createContact(
@@ -198,6 +186,22 @@ export class WixService {
       return this.normalizeWixContact(response.data.contact);
 
     } catch (err: any) {
+      // Handle duplicate contact gracefully
+      if (err?.response?.status === 409 && 
+          err?.response?.data?.details?.applicationError?.code === 'DUPLICATE_CONTACT_EXISTS') {
+        
+        const duplicateContactId = err?.response?.data?.details?.applicationError?.data?.duplicateContactId;
+        const duplicateEmail = err?.response?.data?.details?.applicationError?.data?.duplicateEmail;
+        
+        console.log('[WixContacts] ⚠️ Contact already exists, fetching existing', {
+          duplicateContactId,
+          duplicateEmail
+        });
+        
+        // Fetch and return the existing contact
+        return await this.getContact(instanceId, duplicateContactId);
+      }
+      
       console.error('[WixContacts] ❌ createContact FAILED', {
         status:     err?.response?.status,
         statusText: err?.response?.statusText,
@@ -224,7 +228,25 @@ export class WixService {
     });
 
     const headers = await this.authHeaders(instanceId);
-    const current = await this.getContact(instanceId, contactId);
+    
+    // Try to get the contact - if it doesn't exist, create it instead
+    let current: WixContact | null = null;
+    try {
+      current = await this.getContact(instanceId, contactId);
+    } catch (err: any) {
+      // If contact not found (404), we'll create a new one
+      if (err?.response?.status === 404) {
+        console.log('[WixContacts] ℹ️ Contact not found, will create instead', { contactId });
+        const created = await this.createContact(instanceId, contactData);
+        console.log('[WixContacts] ✅ Contact created as replacement for update', {
+          oldId: contactId,
+          newId: created.id,
+        });
+        return;
+      }
+      // Re-throw other errors
+      throw err;
+    }
 
     const body = {
       revision: current.revision,
@@ -292,6 +314,45 @@ export class WixService {
         statusText: err?.response?.statusText,
         wixMessage: err?.response?.data?.message,
         wixDetails: JSON.stringify(err?.response?.data?.details, null, 2),
+        requestId:  err?.response?.headers?.['x-wix-request-id'],
+      });
+      throw err;
+    }
+  }
+
+  async getContactOrNull(
+    instanceId: string,
+    contactId: string
+  ): Promise<WixContact | null> {
+    console.log('[WixContacts] 🔍 Fetching contact (nullable)', { instanceId, contactId });
+
+    const headers = await this.authHeaders(instanceId);
+
+    try {
+      const response = await axios.get(
+        `${this.contactsBaseURL}/${contactId}`,
+        { headers }
+      );
+
+      console.log('[WixContacts] ✅ Contact fetched', {
+        contactId,
+        revision: response.data?.contact?.revision,
+        status:   response.status,
+      });
+
+      return this.normalizeWixContact(response.data.contact);
+
+    } catch (err: any) {
+      if (err?.response?.status === 404) {
+        console.log('[WixContacts] ℹ️ Contact not found', { contactId });
+        return null;
+      }
+      
+      console.error('[WixContacts] ❌ getContactOrNull FAILED', {
+        contactId,
+        status:     err?.response?.status,
+        statusText: err?.response?.statusText,
+        wixMessage: err?.response?.data?.message,
         requestId:  err?.response?.headers?.['x-wix-request-id'],
       });
       throw err;

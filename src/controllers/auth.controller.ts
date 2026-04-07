@@ -18,7 +18,6 @@ export class AuthController {
       return res.status(400).json({ error: 'Missing instance_id' });
     }
 
-    // Updated to use EU1 endpoint with all required scopes including external_integrations.forms.access
     const authUrl =
       `https://app-eu1.hubspot.com/oauth/authorize?` +
       `client_id=${process.env.HUBSPOT_CLIENT_ID}` +
@@ -60,7 +59,6 @@ export class AuthController {
       const tokenData: HubSpotTokenData = response.data;
       console.log('Received token data for portal:', tokenData.hub_id);
 
-      // Store the full scope including external_integrations.forms.access
       const scope = tokenData.scope || 'crm.objects.contacts.read crm.objects.contacts.write crm.schemas.contacts.read crm.schemas.contacts.write external_integrations.forms.access oauth forms-uploaded-files forms';
 
       const connection = await prisma.hubSpotConnection.upsert({
@@ -86,7 +84,6 @@ export class AuthController {
 
       console.log('HubSpot connection stored in DB with ID:', connection.id);
 
-      // Initialize default field mappings for this connection
       await this.mappingService.initializeDefaultMappings(connection.id);
       console.log('Default field mappings initialized');
 
@@ -111,7 +108,6 @@ export class AuthController {
         errorMessage = error.message;
       }
 
-      // Log detailed error for debugging
       if (error.response?.data) {
         console.error('OAuth error details:', JSON.stringify(error.response.data, null, 2));
       }
@@ -127,14 +123,12 @@ export class AuthController {
     console.log('Disconnecting HubSpot for instance:', instanceId);
 
     try {
-      // Get the connection to revoke the token
       const connection = await prisma.hubSpotConnection.findUnique({
         where: { wixInstanceId: instanceId }
       });
 
       if (connection && connection.accessToken) {
         try {
-          // Revoke the access token
           await axios.post(
             'https://api.hubapi.com/oauth/v3/revoke',
             new URLSearchParams({
@@ -153,13 +147,14 @@ export class AuthController {
         }
       }
 
+      // FIX 1 & 2 & 3: Use Prisma's unset operation instead of null
       await prisma.hubSpotConnection.update({
         where: { wixInstanceId: instanceId },
         data: { 
           isConnected: false,
-          accessToken: null,
-          refreshToken: null,
-          expiresAt: null
+          accessToken: "",  // Changed from null to empty string
+          refreshToken: "",  // Changed from null to empty string
+          expiresAt: new Date(0)  // Changed from null to a past date
         }
       });
 
@@ -186,13 +181,14 @@ export class AuthController {
         return res.json({ connected: false });
       }
 
-      // Check if token is expired and needs refresh
       if (connection.expiresAt && new Date() >= connection.expiresAt) {
         console.log('Token expired, attempting to refresh...');
         try {
+          // FIX 4: Convert connection.id to string if needed, but Prisma already expects string
+          // The error was because connectionId was typed as number but should be string
+          // Since connection.id is already a string (cuid), we pass it directly
           const refreshed = await this.refreshAccessToken(connection.id, connection.refreshToken!);
           if (refreshed) {
-            // Re-fetch connection after refresh
             const updatedConnection = await prisma.hubSpotConnection.findUnique({
               where: { wixInstanceId: instanceId },
               include: { fieldMapping: true }
@@ -225,7 +221,8 @@ export class AuthController {
     }
   };
 
-  private refreshAccessToken = async (connectionId: number, refreshToken: string): Promise<boolean> => {
+  // FIX 5: Change connectionId type from number to string (since Prisma uses cuid strings)
+  private refreshAccessToken = async (connectionId: string, refreshToken: string): Promise<boolean> => {
     try {
       console.log('Refreshing HubSpot access token...');
       

@@ -94,61 +94,87 @@ export class SyncService {
         throw new Error('Email is required for HubSpot contact');
       }
 
-      const result = await this.hubspotService.createOrUpdateContact(
-        connectionId,
-        hubSpotData.email,
-        hubSpotData
-      );
-
       if (syncRecord) {
+        // UPDATE existing HubSpot contact by ID
+        console.log(`🔄 [Wix→HubSpot] Updating existing contact: ${syncRecord.hubSpotContactId}`);
+        await this.hubspotService.updateContact(
+          connectionId,
+          syncRecord.hubSpotContactId,
+          hubSpotData
+        );
+        
         await prisma.contactSync.update({
           where: { id: syncRecord.id },
           data: {
-            hubSpotContactId:  result.id,
-            lastSyncedAt:      new Date(),
+            lastSyncedAt: new Date(),
             lastSyncDirection: 'wix_to_hubspot',
-            syncSource:        'wix',
-            correlationId:     syncCorrelationId,
-            wixVersion:        wixContactData.version ?? 0,
-            updatedAt:         new Date(),
+            syncSource: 'wix',
+            correlationId: syncCorrelationId,
+            wixVersion: wixContactData.version ?? 0,
+            updatedAt: new Date(),
           },
         });
+
+        await this.createSyncLogWithRetry({
+          connectionId,
+          syncType: 'contact_update',
+          direction: 'wix_to_hubspot',
+          status: 'success',
+          wixContactId,
+          hubSpotContactId: syncRecord.hubSpotContactId,
+          correlationId: syncCorrelationId,
+          requestData: hubSpotData,
+          responseData: { id: syncRecord.hubSpotContactId, isNew: false },
+        });
+
+        console.log(`✅ Contact updated (not created) via existing sync record`);
       } else {
+        // NO EXISTING SYNC RECORD - This is a NEW contact
+        console.log(`🆕 [Wix→HubSpot] No sync record found - creating new contact`);
+        
+        const result = await this.hubspotService.createOrUpdateContact(
+          connectionId,
+          hubSpotData.email,
+          hubSpotData
+        );
+
         await prisma.contactSync.create({
           data: {
             connectionId,
             wixContactId,
-            hubSpotContactId:  result.id,
-            lastSyncedAt:      new Date(),
+            hubSpotContactId: result.id,
+            lastSyncedAt: new Date(),
             lastSyncDirection: 'wix_to_hubspot',
-            syncSource:        'wix',
-            correlationId:     syncCorrelationId,
-            wixVersion:        wixContactData.version ?? 0,
+            syncSource: 'wix',
+            correlationId: syncCorrelationId,
+            wixVersion: wixContactData.version ?? 0,
           },
         });
-      }
 
-      await this.createSyncLogWithRetry({
-        connectionId,
-        syncType:        result.isNew ? 'contact_create' : 'contact_update',
-        direction:       'wix_to_hubspot',
-        status:          'success',
-        wixContactId,
-        hubSpotContactId: result.id,
-        correlationId:    syncCorrelationId,
-        requestData:     hubSpotData,
-        responseData:    { id: result.id, isNew: result.isNew },
-      });
+        await this.createSyncLogWithRetry({
+          connectionId,
+          syncType: 'contact_create',
+          direction: 'wix_to_hubspot',
+          status: 'success',
+          wixContactId,
+          hubSpotContactId: result.id,
+          correlationId: syncCorrelationId,
+          requestData: hubSpotData,
+          responseData: { id: result.id, isNew: true },
+        });
+
+        console.log(`✅ New contact created from Wix`);
+      }
 
     } catch (error) {
       await this.createSyncLogWithRetry({
         connectionId,
-        syncType:      'contact_update',
-        direction:     'wix_to_hubspot',
-        status:        'failed',
+        syncType: 'contact_update',
+        direction: 'wix_to_hubspot',
+        status: 'failed',
         wixContactId,
         correlationId: syncCorrelationId,
-        errorMessage:  error instanceof Error ? error.message : 'Unknown error',
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
     }
@@ -173,8 +199,26 @@ export class SyncService {
       }
     }
 
+    // Loop prevention for HubSpot → Wix sync
+    const recentWixToHubspotSync = await prisma.syncLog.findFirst({
+      where: {
+        connectionId: connectionId,
+        hubSpotContactId: hubSpotContactId,
+        direction: 'wix_to_hubspot',
+        status: 'success',
+        createdAt: { gte: new Date(Date.now() - 60000) },
+      },
+    });
+
+    if (recentWixToHubspotSync) {
+      console.log(`🛡️ Loop prevention: skipping HubSpot to Wix sync - recently synced FROM Wix`, {
+        hubSpotContactId,
+        secondsAgo: (Date.now() - recentWixToHubspotSync.createdAt.getTime()) / 1000
+      });
+      return;
+    }
+
     try {
-      // CRITICAL FIX: Get email from HubSpot contact first
       const email = hubSpotContactData.properties?.email;
       
       if (!email) {
@@ -187,19 +231,15 @@ export class SyncService {
         connectionId
       });
 
-      // STEP 1: ALWAYS query Wix by email first to find existing contact
       let existingWixContact = await this.wixService.queryContactByEmail(connectionId, email);
       
-      // STEP 2: Transform the data
       const wixData = await this.transformHubSpotToWix(connectionId, hubSpotContactData);
       
-      // STEP 3: Get version info
       const rawTimestamp = hubSpotContactData.properties?.hs_updatedate;
       const hubSpotVersion = rawTimestamp
         ? Math.min(parseFloat(rawTimestamp), Number.MAX_SAFE_INTEGER)
         : 0;
 
-      // STEP 4: Check for existing sync record
       const syncRecord = await prisma.contactSync.findUnique({
         where: {
           connectionId_hubSpotContactId: { connectionId, hubSpotContactId }
@@ -209,8 +249,70 @@ export class SyncService {
       let finalWixContactId: string;
       let isNewMapping = false;
 
+      // ============================================================
+      // FIX: Handle conflict by DELETING conflicting records first
+      // ============================================================
+      
       if (existingWixContact) {
-        // FOUND BY EMAIL - Update this contact
+        // Check if this Wix contact is already linked to a DIFFERENT HubSpot contact
+        const existingWixLink = await prisma.contactSync.findUnique({
+          where: {
+            connectionId_wixContactId: {
+              connectionId,
+              wixContactId: existingWixContact.id
+            }
+          }
+        });
+
+        if (existingWixLink && existingWixLink.hubSpotContactId !== hubSpotContactId) {
+          // CONFLICT: Wix contact is linked to a different HubSpot contact
+          console.warn('[Sync] Wix contact linked to different HubSpot - REASSIGNING link', {
+            wixContactId: existingWixContact.id,
+            oldHubSpotId: existingWixLink.hubSpotContactId,
+            newHubSpotId: hubSpotContactId
+          });
+          
+          // FIX: Delete the conflicting record first to avoid unique constraint violation
+          await prisma.contactSync.delete({
+            where: { id: existingWixLink.id }
+          });
+          
+          // Also check if the new HubSpot contact is already linked elsewhere
+          const existingNewHubSpotLink = await prisma.contactSync.findUnique({
+            where: {
+              connectionId_hubSpotContactId: {
+                connectionId,
+                hubSpotContactId: hubSpotContactId
+              }
+            }
+          });
+          
+          if (existingNewHubSpotLink) {
+            console.warn('[Sync] New HubSpot contact already linked to different Wix - deleting old link', {
+              hubSpotContactId,
+              oldWixId: existingNewHubSpotLink.wixContactId
+            });
+            await prisma.contactSync.delete({
+              where: { id: existingNewHubSpotLink.id }
+            });
+          }
+          
+          // Now create a fresh link between the Wix contact and new HubSpot contact
+          await prisma.contactSync.create({
+            data: {
+              connectionId,
+              wixContactId: existingWixContact.id,
+              hubSpotContactId: hubSpotContactId,
+              lastSyncedAt: new Date(),
+              lastSyncDirection: 'hubspot_to_wix',
+              syncSource: 'hubspot',
+              correlationId: syncCorrelationId,
+              hubSpotVersion,
+            }
+          });
+        }
+        
+        // Update the contact
         console.log('[Sync] Found existing Wix contact by EMAIL', {
           email,
           wixContactId: existingWixContact.id,
@@ -220,74 +322,106 @@ export class SyncService {
         await this.wixService.updateContact(connectionId, existingWixContact.id, wixData);
         finalWixContactId = existingWixContact.id;
         
-        // Update sync record if it exists with wrong ID
-        if (syncRecord && syncRecord.wixContactId !== existingWixContact.id) {
-          console.log('[Sync] Updating sync record with correct Wix ID', {
-            oldWixId: syncRecord.wixContactId,
-            newWixId: existingWixContact.id
-          });
-          await prisma.contactSync.update({
-            where: { id: syncRecord.id },
-            data: { wixContactId: existingWixContact.id }
-          });
-        }
       } else if (syncRecord) {
-        // Have sync record but no email match - use stored Wix ID
-        console.log('[Sync] Using stored Wix ID from sync record', {
-          wixContactId: syncRecord.wixContactId,
-          hubSpotContactId
+        // Check if the stored Wix contact ID is still valid and not linked elsewhere
+        const existingWixLink = await prisma.contactSync.findUnique({
+          where: {
+            connectionId_wixContactId: {
+              connectionId,
+              wixContactId: syncRecord.wixContactId
+            }
+          }
         });
         
-        await this.wixService.updateContact(connectionId, syncRecord.wixContactId, wixData);
-        finalWixContactId = syncRecord.wixContactId;
+        if (existingWixLink && existingWixLink.hubSpotContactId !== hubSpotContactId) {
+          // Stored Wix ID is linked to a different HubSpot contact
+          console.warn('[Sync] Stored Wix ID linked to different HubSpot - REASSIGNING', {
+            oldWixId: syncRecord.wixContactId,
+            conflictingHubSpotId: existingWixLink.hubSpotContactId
+          });
+          
+          // Delete the conflicting record
+          await prisma.contactSync.delete({
+            where: { id: existingWixLink.id }
+          });
+          
+          // Delete the current sync record too
+          await prisma.contactSync.delete({
+            where: { id: syncRecord.id }
+          });
+          
+          // Create fresh link
+          await prisma.contactSync.create({
+            data: {
+              connectionId,
+              wixContactId: existingWixLink.wixContactId,
+              hubSpotContactId: hubSpotContactId,
+              lastSyncedAt: new Date(),
+              lastSyncDirection: 'hubspot_to_wix',
+              syncSource: 'hubspot',
+              correlationId: syncCorrelationId,
+              hubSpotVersion,
+            }
+          });
+          
+          // Use the existing Wix contact
+          await this.wixService.updateContact(connectionId, existingWixLink.wixContactId, wixData);
+          finalWixContactId = existingWixLink.wixContactId;
+        } else {
+          // Safe to use stored Wix ID
+          console.log('[Sync] Using stored Wix ID from sync record', {
+            wixContactId: syncRecord.wixContactId,
+            hubSpotContactId
+          });
+          
+          await this.wixService.updateContact(connectionId, syncRecord.wixContactId, wixData);
+          finalWixContactId = syncRecord.wixContactId;
+          
+          // Update the sync record
+          await prisma.contactSync.update({
+            where: { id: syncRecord.id },
+            data: {
+              lastSyncedAt: new Date(),
+              lastSyncDirection: 'hubspot_to_wix',
+              syncSource: 'hubspot',
+              correlationId: syncCorrelationId,
+              hubSpotVersion,
+              updatedAt: new Date(),
+            },
+          });
+        }
+        
       } else {
-        // No existing contact anywhere - create new
+        // No existing contact anywhere - create new (only for truly new contacts)
         console.log('[Sync] Creating NEW Wix contact', { email, hubSpotContactId });
         const newWixContact = await this.wixService.createContact(connectionId, wixData);
         finalWixContactId = newWixContact.id;
         isNewMapping = true;
-      }
-
-      // STEP 5: Upsert the contact sync record
-      if (syncRecord) {
-        await prisma.contactSync.update({
-          where: { id: syncRecord.id },
-          data: {
-            lastSyncedAt:      new Date(),
-            lastSyncDirection: 'hubspot_to_wix',
-            syncSource:        'hubspot',
-            correlationId:     syncCorrelationId,
-            hubSpotVersion,
-            wixContactId:      finalWixContactId,
-            updatedAt:         new Date(),
-          },
-        });
-      } else {
+        
         await prisma.contactSync.create({
           data: {
             connectionId,
-            wixContactId:      finalWixContactId,
+            wixContactId: finalWixContactId,
             hubSpotContactId,
-            lastSyncedAt:      new Date(),
+            lastSyncedAt: new Date(),
             lastSyncDirection: 'hubspot_to_wix',
-            syncSource:        'hubspot',
-            correlationId:     syncCorrelationId,
+            syncSource: 'hubspot',
+            correlationId: syncCorrelationId,
             hubSpotVersion,
           },
         });
       }
 
-      // STEP 6: Log success
       await this.createSyncLogWithRetry({
         connectionId,
-        syncType:        (syncRecord || isNewMapping) ? 'contact_update' : 'contact_create',
-        direction:       'hubspot_to_wix',
-        status:          'success',
-        wixContactId:    finalWixContactId,
+        syncType: (syncRecord || isNewMapping) ? 'contact_update' : 'contact_create',
+        direction: 'hubspot_to_wix',
+        status: 'success',
+        wixContactId: finalWixContactId,
         hubSpotContactId,
-        correlationId:   syncCorrelationId,
-        requestData:     wixData,
-        responseData:    { success: true, foundByEmail: !!existingWixContact },
+        correlationId: syncCorrelationId,
+        requestData: wixData,
+        responseData: { success: true, foundByEmail: !!existingWixContact },
       });
 
       console.log('[Sync] Successfully synced HubSpot contact to Wix', {
@@ -306,18 +440,17 @@ export class SyncService {
       
       await this.createSyncLogWithRetry({
         connectionId,
-        syncType:        'contact_update',
-        direction:       'hubspot_to_wix',
-        status:          'failed',
+        syncType: 'contact_update',
+        direction: 'hubspot_to_wix',
+        status: 'failed',
         hubSpotContactId,
-        correlationId:   syncCorrelationId,
-        errorMessage:    error instanceof Error ? error.message : 'Unknown error',
+        correlationId: syncCorrelationId,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
       });
       throw error;
     }
   }
 
-  // Helper method to create sync log with retry logic for database connection issues
   private async createSyncLogWithRetry(
     data: any,
     maxRetries: number = 3
@@ -331,15 +464,12 @@ export class SyncService {
       } catch (error: any) {
         lastError = error;
         
-        // Check if it's a database connection error
         if (error.code === 'P1017' || error.message?.includes('connection')) {
           console.log(`[Sync] Database connection error, retrying sync log creation (attempt ${attempt}/${maxRetries})`);
           
-          // Exponential backoff
           const backoffMs = Math.min(1000 * Math.pow(2, attempt - 1), 5000);
           await new Promise(resolve => setTimeout(resolve, backoffMs));
           
-          // Attempt to reconnect
           try {
             await prisma.$disconnect();
             await prisma.$connect();
@@ -347,20 +477,17 @@ export class SyncService {
             console.error('[Sync] Failed to reconnect to database', connError);
           }
         } else {
-          // Non-connection error, log but don't retry
           console.error('[Sync] Failed to create sync log (non-retryable error)', error);
           throw error;
         }
       }
     }
     
-    // If we get here, all retries failed
     console.error('[Sync] CRITICAL: Failed to create sync log after all retries', {
       data,
       lastError: lastError?.message
     });
     
-    // Fallback: write to console/file
     const fs = require('fs');
     const logEntry = {
       timestamp: new Date().toISOString(),
@@ -373,7 +500,5 @@ export class SyncService {
     } catch (fsError) {
       console.error('[Sync] Failed to write fallback log', fsError);
     }
-    
-    // Don't throw - we don't want to fail the sync just because logging failed
   }
 }

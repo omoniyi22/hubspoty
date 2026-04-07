@@ -317,15 +317,17 @@ class WixService {
     }
     async createOrUpdateContact(instanceId, email, contactData) {
         console.log('[WixContacts] 🔄 createOrUpdateContact', { instanceId, email });
-        const existing = await this.queryContactByEmail(instanceId, email);
+        // First, try to find existing contact by email
+        let existing = await this.queryContactByEmail(instanceId, email);
         if (existing) {
-            console.log('[WixContacts] 🔁 Contact exists — updating', {
+            console.log('[WixContacts] 🔁 Contact exists by email — updating', {
                 contactId: existing.id,
                 email,
             });
             await this.updateContact(instanceId, existing.id, contactData);
             return { id: existing.id, isNew: false };
         }
+        // No contact found by email - create new
         console.log('[WixContacts] 🆕 Contact not found — creating', { email });
         const created = await this.createContact(instanceId, { ...contactData, email });
         return { id: created.id, isNew: true };

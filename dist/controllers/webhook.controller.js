@@ -48,14 +48,11 @@ class WebhookController {
         this.processingLocks = new Map();
         // ─────────────────────────────────────────────
         // UNIFIED WIX WEBHOOK HANDLER
-        // Handles BOTH contact events AND form submissions
         // ─────────────────────────────────────────────
         this.handleWixWebhook = async (req, res) => {
             logger.info('📩 Wix webhook HTTP POST received');
-            // Respond 200 IMMEDIATELY as Wix requires response within 1250ms
             res.status(200).send();
             try {
-                // Verify and decode the JWT payload
                 const decodedPayload = jsonwebtoken_1.default.verify(req.body, PUBLIC_KEY);
                 const event = JSON.parse(decodedPayload.data);
                 const eventData = JSON.parse(event.data);
@@ -67,7 +64,6 @@ class WebhookController {
                 logger.info('✅ Successfully decoded JWT webhook payload');
                 logger.info('📋 Event type:', { eventType: event.eventType });
                 logger.info('📋 Instance ID:', { instanceId: event.instanceId });
-                // Handle different event types
                 switch (event.eventType) {
                     case "com.wixpress.formbuilder.api.v1.FormSubmittedEvent":
                         logger.info('📋 Processing form submission event');
@@ -168,8 +164,6 @@ class WebhookController {
     // ============================================================
     async getFormSubmissionByContactId(contactId, accessToken, wixInstanceId) {
         try {
-            // Note: This requires the Wix Forms API endpoint
-            // You'll need to implement the actual API call based on Wix Forms API
             const response = await fetch(`https://www.wixapis.com/forms/v4/submissions/query`, {
                 method: 'POST',
                 headers: {
@@ -191,7 +185,6 @@ class WebhookController {
             if (!submission)
                 return null;
             const fields = submission.submissions ?? {};
-            // Log all hidden fields for debugging
             console.log('🔍 [Approach 1] Form submission hidden fields:', {
                 fieldKeys: Object.keys(fields),
                 submissionId: submission.id,
@@ -201,8 +194,6 @@ class WebhookController {
                 submissionId: submission.id,
                 formId: submission.formId,
                 contactId: submission.contactId,
-                // UTM / Attribution - read from hidden form fields
-                // Field keys depend on what the site owner named them
                 utmSource: fields['utm_source'] ?? fields['utmSource'] ?? null,
                 utmMedium: fields['utm_medium'] ?? fields['utmMedium'] ?? null,
                 utmCampaign: fields['utm_campaign'] ?? fields['utmCampaign'] ?? null,
@@ -210,7 +201,7 @@ class WebhookController {
                 utmContent: fields['utm_content'] ?? fields['utmContent'] ?? null,
                 pageUrl: fields['page_url'] ?? fields['pageUrl'] ?? null,
                 referrer: fields['referrer'] ?? null,
-                rawFields: fields, // Store all fields for debugging
+                rawFields: fields,
             };
         }
         catch (error) {
@@ -220,11 +211,9 @@ class WebhookController {
     }
     // ============================================================
     // APPROACH 2: Read from info.extendedFields on the Contact
-    // Some Wix apps write UTM data there as system fields
     // ============================================================
     async getContactWithAttribution(contactId, accessToken, wixInstanceId) {
         try {
-            // You'll need to get the contact from Wix Contacts API
             const response = await fetch(`https://www.wixapis.com/contacts/v4/contacts/${contactId}`, {
                 headers: {
                     'Authorization': accessToken,
@@ -236,16 +225,13 @@ class WebhookController {
             if (!contact)
                 return null;
             const ext = contact.info?.extendedFields ?? {};
-            // Log all extended fields for debugging
             console.log('🔍 [Approach 2] Contact extended fields:', {
                 extendedFieldKeys: Object.keys(ext),
                 allExtendedFields: ext
             });
-            // Common system field keys Wix/marketing apps may write
             return {
                 name: contact.info?.name?.full,
                 email: contact.primaryInfo?.email,
-                // Try known extended field key patterns
                 utmSource: ext['attribution.utmSource'] ?? ext['custom.utmSource'] ?? ext['utm_source'] ?? null,
                 utmMedium: ext['attribution.utmMedium'] ?? ext['custom.utmMedium'] ?? ext['utm_medium'] ?? null,
                 utmCampaign: ext['attribution.utmCampaign'] ?? ext['custom.utmCampaign'] ?? ext['utm_campaign'] ?? null,
@@ -253,7 +239,6 @@ class WebhookController {
                 utmContent: ext['attribution.utmContent'] ?? ext['custom.utmContent'] ?? ext['utm_content'] ?? null,
                 pageUrl: ext['attribution.pageUrl'] ?? ext['custom.pageUrl'] ?? ext['page_url'] ?? null,
                 referrer: ext['attribution.referrer'] ?? ext['custom.referrer'] ?? null,
-                // Dump all extended fields for debugging
                 _allExtendedFields: ext,
             };
         }
@@ -264,11 +249,9 @@ class WebhookController {
     }
     // ============================================================
     // APPROACH 3: Combined Orchestrator
-    // Merges data from both approaches, preferring form submission fields
     // ============================================================
     async getCombinedAttributionData(contactId, accessToken, wixInstanceId) {
         console.log(`🔍 [Approach 3] Fetching attribution data for contact: ${contactId}`);
-        // Run both in parallel
         const [submissionData, contactData] = await Promise.allSettled([
             this.getFormSubmissionByContactId(contactId, accessToken, wixInstanceId),
             this.getContactWithAttribution(contactId, accessToken, wixInstanceId),
@@ -281,7 +264,6 @@ class WebhookController {
             submissionFields: submission?.rawFields ? Object.keys(submission.rawFields) : [],
             contactExtendedFields: contact?._allExtendedFields ? Object.keys(contact._allExtendedFields) : []
         });
-        // Merge: prefer form submission fields (more specific), fall back to contact extended fields
         return {
             contactId,
             contact: {
@@ -307,7 +289,6 @@ class WebhookController {
     }
     // ─────────────────────────────────────────────
     // PROCESS FORM SUBMISSION FROM JWT WEBHOOK
-    // FULL VERSION with UTM field storage using all 3 approaches
     // ─────────────────────────────────────────────
     async processFormSubmissionEvent(event, eventData) {
         const correlationId = (0, uuid_1.v4)();
@@ -329,7 +310,6 @@ class WebhookController {
                 logger.warn('⚠️ No active HubSpot connection for form submission', { instanceId });
                 return;
             }
-            // Extract contact information from form submission
             const contactInfo = {};
             let email = null;
             let firstName = null;
@@ -370,9 +350,6 @@ class WebhookController {
                 logger.error('❌ No email found in form submission');
                 return;
             }
-            // ============================================================
-            // USE ALL 3 APPROACHES TO GET UTM PARAMETERS
-            // ============================================================
             let attributionData = null;
             let utmParams = {
                 utm_source: null,
@@ -385,7 +362,6 @@ class WebhookController {
                 timestamp: new Date().toISOString(),
                 wix_contact_id: formData.contactId || null,
             };
-            // First, check direct fields in the form submission event
             if (formData.utm_source || formData.utmSource) {
                 utmParams.utm_source = formData.utm_source || formData.utmSource;
                 utmParams.utm_medium = formData.utm_medium || formData.utmMedium;
@@ -396,12 +372,10 @@ class WebhookController {
                 utmParams.referrer = formData.referrer;
                 console.log('📊 [Direct] UTM from form event:', utmParams);
             }
-            // If we have a contact ID, try the combined approach
             if (formData.contactId && connection.wixAccessToken) {
                 try {
                     attributionData = await this.getCombinedAttributionData(formData.contactId, connection.wixAccessToken, instanceId);
                     if (attributionData?.attribution) {
-                        // Merge: direct fields take precedence, then attribution data
                         utmParams = {
                             utm_source: utmParams.utm_source || attributionData.attribution.source,
                             utm_medium: utmParams.utm_medium || attributionData.attribution.medium,
@@ -420,7 +394,6 @@ class WebhookController {
                     logger.error('Failed to get combined attribution data:', error);
                 }
             }
-            // Map UTM to HubSpot properties
             if (utmParams.utm_source)
                 contactInfo.hs_analytics_source = utmParams.utm_source;
             if (utmParams.utm_medium)
@@ -443,7 +416,6 @@ class WebhookController {
                 company,
             });
             logger.info('📊 Final UTM Attribution captured:', utmParams);
-            // Check if contact already exists
             let wixContactId = formData.contactId;
             let existingSync = null;
             if (wixContactId) {
@@ -476,7 +448,6 @@ class WebhookController {
                     });
                 }
             }
-            // Store form submission record with full data INCLUDING UTM FIELDS and debug info
             const savedSubmission = await database_1.prisma.formSubmission.create({
                 data: {
                     connectionId: connection.id,
@@ -491,11 +462,10 @@ class WebhookController {
                     },
                     utmParams: {
                         ...utmParams,
-                        _debug: attributionData?._debug || null, // Store debug info to see what worked
+                        _debug: attributionData?._debug || null,
                     },
                     syncedToHubSpot: true,
                     hubSpotSubmissionId: result.id,
-                    // UTM individual fields for querying
                     utmSource: utmParams.utm_source,
                     utmMedium: utmParams.utm_medium,
                     utmCampaign: utmParams.utm_campaign,
@@ -503,7 +473,6 @@ class WebhookController {
                     utmContent: utmParams.utm_content,
                     pageUrl: utmParams.page_url,
                     referrer: utmParams.referrer,
-                    // Lead tracking fields
                     leadStatus: 'new',
                     leadScore: 0,
                     submittedAt: new Date(),
@@ -533,8 +502,7 @@ class WebhookController {
         }
     }
     // ─────────────────────────────────────────────
-    // PROCESS CONTACT EVENT FROM JWT WEBHOOK
-    // WITH ALL 3 APPROACHES FOR UTM DETECTION
+    // PROCESS CONTACT EVENT FROM JWT WEBHOOK - FIXED
     // ─────────────────────────────────────────────
     async processContactEventFromJWT(event, eventData, eventType) {
         const correlationId = (0, uuid_1.v4)();
@@ -554,21 +522,16 @@ class WebhookController {
                 logger.warn('⚠️ No active HubSpot connection', { instanceId });
                 return;
             }
-            // Extract nested contact data
             if (contact.updatedEvent?.currentEntity)
                 contact = contact.updatedEvent.currentEntity;
             if (contact.createdEvent?.currentEntity)
                 contact = contact.createdEvent.currentEntity;
-            // Detect if this came from a form
             const isFromWixForms = contact.source?.sourceType === 'WIX_FORMS';
             const isFormActivity = contact.lastActivity?.activityType === 'FORM_SUBMITTED';
             const isFormDescription = contact.lastActivity?.description === 'Submitted a form' ||
                 contact.lastActivity?.description?.toLowerCase().includes('form');
             const hasFormIcon = contact.lastActivity?.icon?.name === 'WixForms';
             const isFromForm = isFromWixForms || isFormActivity || isFormDescription || hasFormIcon;
-            // ============================================================
-            // USE ALL 3 APPROACHES TO GET UTM DATA
-            // ============================================================
             let attributionData = null;
             if (contactId && connection.wixAccessToken) {
                 try {
@@ -593,7 +556,6 @@ class WebhookController {
                     utmFromAttribution: attributionData?.attribution,
                 });
             }
-            // Loop prevention
             const recentHubspotToWixSync = await database_1.prisma.contactSync.findFirst({
                 where: {
                     connectionId: connection.id,
@@ -606,7 +568,6 @@ class WebhookController {
                 logger.info('🛡️ Loop prevention: skipping — recently synced FROM HubSpot', { contactId });
                 return;
             }
-            // Extract email
             const primaryEmail = contact.primaryEmail?.email ||
                 contact.primaryInfo?.email ||
                 contact.info?.emails?.items?.find((e) => e.primary)?.email;
@@ -614,11 +575,9 @@ class WebhookController {
                 logger.warn('⚠️ No email on contact — skipping sync', { contactId });
                 return;
             }
-            // Extract name and phone
             const firstName = contact.info?.name?.first || null;
             const lastName = contact.info?.name?.last || null;
             const phone = contact.primaryPhone?.phone || contact.primaryInfo?.phone || null;
-            // Build WixContact object
             const wixContactData = {
                 id: contactId,
                 email: primaryEmail,
@@ -628,7 +587,6 @@ class WebhookController {
                 version: contact.revision || 0,
             };
             const hubSpotData = await this.mappingService.transformWixToHubSpot(connection.id, wixContactData);
-            // Add UTM data to HubSpot if we have it
             if (attributionData?.attribution) {
                 if (attributionData.attribution.source)
                     hubSpotData.hs_analytics_source = attributionData.attribution.source;
@@ -649,8 +607,30 @@ class WebhookController {
                 logger.error('❌ No email after transformation');
                 return;
             }
-            const result = await this.hubspotService.createOrUpdateContact(connection.id, hubSpotData.email, hubSpotData);
-            // Handle unique constraint
+            // ============================================================
+            // FIX: Check for existing sync record BEFORE calling HubSpot
+            // ============================================================
+            const existingSyncRecord = await database_1.prisma.contactSync.findUnique({
+                where: {
+                    connectionId_wixContactId: {
+                        connectionId: connection.id,
+                        wixContactId: contactId,
+                    },
+                },
+            });
+            let result;
+            if (existingSyncRecord) {
+                // UPDATE existing HubSpot contact by ID
+                logger.info(`🔄 [JWT] Updating existing HubSpot contact: ${existingSyncRecord.hubSpotContactId}`);
+                await this.hubspotService.updateContact(connection.id, existingSyncRecord.hubSpotContactId, hubSpotData);
+                result = { id: existingSyncRecord.hubSpotContactId, isNew: false };
+            }
+            else {
+                // No existing sync record - search by email or create
+                logger.info(`🆕 [JWT] No sync record found, creating/updating by email`);
+                result = await this.hubspotService.createOrUpdateContact(connection.id, hubSpotData.email, hubSpotData);
+            }
+            // Handle unique constraint for sync record
             const existingSyncByHubSpot = await database_1.prisma.contactSync.findFirst({
                 where: {
                     connectionId: connection.id,
@@ -700,7 +680,6 @@ class WebhookController {
                     },
                 });
             }
-            // Save to form submission table if this came from a form
             if (isFromForm && attributionData) {
                 try {
                     const savedForm = await database_1.prisma.formSubmission.create({
@@ -750,6 +729,7 @@ class WebhookController {
                 email: primaryEmail,
                 isFromForm: isFromForm,
                 hasUtmData: !!attributionData?.attribution?.source,
+                wasUpdate: !!existingSyncRecord,
             });
         }
         catch (error) {
@@ -757,7 +737,7 @@ class WebhookController {
         }
     }
     // ─────────────────────────────────────────────
-    // PROCESS WIX CONTACT EVENT (from SDK)
+    // PROCESS WIX CONTACT EVENT (from SDK) - FIXED
     // ─────────────────────────────────────────────
     async processWixContactEvent(rawEvent, eventType) {
         const correlationId = (0, uuid_1.v4)();
@@ -796,7 +776,6 @@ class WebhookController {
                 logger.warn('⚠️ No active HubSpot connection', { instanceId });
                 return;
             }
-            // Loop prevention checks
             const recentHubspotToWixSync = await database_1.prisma.contactSync.findFirst({
                 where: {
                     connectionId: connection.id,
@@ -887,7 +866,29 @@ class WebhookController {
                     logger.error('❌ No email after transformation');
                     return;
                 }
-                const result = await this.hubspotService.createOrUpdateContact(connection.id, hubSpotData.email, hubSpotData);
+                // ============================================================
+                // FIX: Check for existing sync record BEFORE calling HubSpot
+                // ============================================================
+                const existingSyncRecord = await database_1.prisma.contactSync.findUnique({
+                    where: {
+                        connectionId_wixContactId: {
+                            connectionId: connection.id,
+                            wixContactId: contactId,
+                        },
+                    },
+                });
+                let result;
+                if (existingSyncRecord) {
+                    // UPDATE existing HubSpot contact by ID
+                    logger.info(`🔄 [SDK] Updating existing HubSpot contact: ${existingSyncRecord.hubSpotContactId}`);
+                    await this.hubspotService.updateContact(connection.id, existingSyncRecord.hubSpotContactId, hubSpotData);
+                    result = { id: existingSyncRecord.hubSpotContactId, isNew: false };
+                }
+                else {
+                    // No existing sync record - search by email or create
+                    logger.info(`🆕 [SDK] No sync record found, creating/updating by email`);
+                    result = await this.hubspotService.createOrUpdateContact(connection.id, hubSpotData.email, hubSpotData);
+                }
                 await database_1.prisma.contactSync.upsert({
                     where: {
                         connectionId_wixContactId: {
@@ -935,6 +936,7 @@ class WebhookController {
                     fieldsSynced: Object.keys(hubSpotData),
                     durationMs: Date.now() - startTime,
                     correlationId,
+                    wasUpdate: !!existingSyncRecord,
                 });
             }
             finally {

@@ -68,6 +68,19 @@ export class WebhookController {
   handleWixWebhook = async (req: Request, res: Response) => {
     logger.info('📩 Wix webhook HTTP POST received');
 
+    // ✅ REQUEST DEDUPLICATION: Check if this exact request body was processed recently
+    const crypto = require('crypto');
+    const bodyHash = crypto.createHash('md5').update(JSON.stringify(req.body)).digest('hex');
+    const dedupeKey = `wix-request-${bodyHash}`;
+
+    if (this.recentProcessedEvents.has(dedupeKey)) {
+      logger.info('🛡️ Duplicate HTTP request detected, skipping processing', { bodyHash });
+      res.status(200).send();
+      return;
+    }
+    this.recentProcessedEvents.set(dedupeKey, Date.now());
+    setTimeout(() => this.recentProcessedEvents.delete(dedupeKey), 5000);
+
     // Always respond immediately to avoid timeout
     res.status(200).send();
 

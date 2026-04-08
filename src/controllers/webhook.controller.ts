@@ -656,7 +656,7 @@ export class WebhookController {
 
             await prisma.contactSync.update({
               where: { id: syncRecord.id },
-              data: { lastSyncedAt: new Date() }
+              data: { lastSyncedAt: new Date(), lastSyncDirection: 'hubspot_to_wix' },
             });
 
             // ✅ ADDED: Create sync log for HubSpot → Wix direction

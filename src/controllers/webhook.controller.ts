@@ -659,6 +659,25 @@ export class WebhookController {
               data: { lastSyncedAt: new Date() }
             });
 
+            // ✅ ADDED: Create sync log for HubSpot → Wix direction
+            await prisma.syncLog.create({
+              data: {
+                connectionId: connection.id,
+                syncType: 'contact_update',
+                direction: 'hubspot_to_wix',
+                status: 'success',
+                wixContactId: syncRecord.wixContactId,
+                hubSpotContactId: objectId?.toString(),
+                correlationId: uuidv4(),
+                requestData: { [propertyName]: propertyValue },
+                responseData: { updated: true, field: wixField, value: updateValue },
+              },
+            }).catch((err: any) => {
+              if (err.code !== 'P2002') {
+                logger.error('Failed to create sync log:', err);
+              }
+            });
+
             logger.info('✅ HubSpot event synced to Wix', {
               objectId,
               subscriptionType,
@@ -668,7 +687,21 @@ export class WebhookController {
             });
           } catch (updateError) {
             logger.error(`❌ Failed to update Wix contact: ${updateError}`);
-            // Don't throw, continue to next event
+
+            // ✅ ADDED: Log failure
+            await prisma.syncLog.create({
+              data: {
+                connectionId: connection.id,
+                syncType: 'contact_update',
+                direction: 'hubspot_to_wix',
+                status: 'failed',
+                wixContactId: syncRecord.wixContactId,
+                hubSpotContactId: objectId?.toString(),
+                correlationId: uuidv4(),
+                requestData: { [propertyName]: propertyValue },
+                errorMessage: updateError instanceof Error ? updateError.message : 'Unknown error',
+              },
+            }).catch(() => { });
           }
         } else {
           logger.debug(`Skipping update for ${propertyName} - shouldSync: ${shouldSync}, wixField: ${wixField}`);

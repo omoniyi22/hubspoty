@@ -519,28 +519,20 @@ export class WebhookController {
       for (const event of events) {
         const { portalId, subscriptionType, objectId, propertyName, propertyValue } = event;
 
-        // SAFEGUARD 1: Skip events without propertyName (like contact.creation without property change)
+        // Skip events without propertyName
         if (!propertyName) {
-          logger.debug('🛡️ Skipping event - no propertyName', { subscriptionType, objectId });
-          continue;
-        }
-
-        // SAFEGUARD 2: Skip if propertyValue is null/undefined
-        if (propertyValue === null || propertyValue === undefined) {
-          logger.debug('🛡️ Skipping event - propertyValue is null/undefined', { propertyName, objectId });
+          logger.info('🛡️ Skipping event - no propertyName', { subscriptionType, objectId });
           continue;
         }
 
         const eventKey = `${portalId}-${objectId}-${subscriptionType}-${propertyName}`;
 
-        // SAFEGUARD 3: Duplicate detection within batch
         if (processedEventKeys.has(eventKey)) {
           logger.info('🛡️ Duplicate event detected in batch, skipping');
           continue;
         }
         processedEventKeys.add(eventKey);
 
-        // SAFEGUARD 4: Recent duplicate detection (10 second window)
         if (this.recentProcessedEvents.has(eventKey)) {
           logger.info('🛡️ Recent duplicate event detected, skipping', { eventKey });
           continue;
@@ -548,7 +540,6 @@ export class WebhookController {
         this.recentProcessedEvents.set(eventKey, Date.now());
         setTimeout(() => this.recentProcessedEvents.delete(eventKey), 10000);
 
-        // Get connection
         const connection = await prisma.hubSpotConnection.findFirst({
           where: { hubSpotPortalId: portalId?.toString(), isConnected: true },
         });
@@ -558,14 +549,14 @@ export class WebhookController {
           continue;
         }
 
-        // SAFEGUARD 5: Loop prevention - check for recent Wix → HubSpot sync
+        // Loop prevention
         const recentWixToHubspotSync = await prisma.syncLog.findFirst({
           where: {
             connectionId: connection.id,
             hubSpotContactId: objectId?.toString(),
             direction: 'wix_to_hubspot',
             status: 'success',
-            createdAt: { gte: new Date(Date.now() - 60000) },
+            createdAt: { gte: new Date(Date.now() - 60_000) },
           },
         });
 
@@ -577,7 +568,6 @@ export class WebhookController {
           continue;
         }
 
-        // Get sync record
         const syncRecord = await prisma.contactSync.findUnique({
           where: {
             connectionId_hubSpotContactId: {
@@ -592,110 +582,103 @@ export class WebhookController {
           continue;
         }
 
-        // SAFEGUARD 6: Get field mappings from database
-        let mapping: any = null;
+        // ============================================================
+        // CAUTIOUS APPROACH: Try database mapping first, fallback to hardcoded
+        // ============================================================
+
+        let wixField: string | null = null;
+        let shouldSync = true;
+        let direction = 'unknown';
+
         try {
+          // Try to get mapping from database
           const fieldMapping = await this.mappingService.getFieldMapping(connection.id);
-          mapping = fieldMapping.mappings.find(m => m.hubSpotProperty === propertyName);
-        } catch (err) {
-          logger.error('Failed to get field mappings', err);
-          continue;
+          const mapping = fieldMapping.mappings.find(m => m.hubSpotProperty === propertyName);
+
+          if (mapping) {
+            // Database mapping exists
+            direction = mapping.direction;
+
+            // Check direction - ONLY skip if explicitly 'wix_to_hubspot'
+            if (mapping.direction === 'wix_to_hubspot') {
+              shouldSync = false;
+              logger.info(`🛡️ Skipping ${propertyName} - direction is 'wix_to_hubspot' (only Wix→HubSpot)`, {
+                objectId,
+                propertyName
+              });
+            } else if (mapping.isActive === false) {
+              shouldSync = false;
+              logger.info(`🛡️ Skipping ${propertyName} - mapping is inactive`, { objectId });
+            } else {
+              wixField = mapping.wixField;
+              logger.info(`📋 Using database mapping for ${propertyName} → ${wixField} (direction: ${direction})`);
+            }
+          }
+        } catch (dbError) {
+          logger.warn(`Could not read database mapping for ${propertyName}, using fallback`, dbError);
         }
 
-        // SAFEGUARD 7: Auto-discover new field (with limits)
-        if (!mapping && propertyValue) {
+        // FALLBACK: Use hardcoded mapping if database didn't provide one
+        if (!wixField && shouldSync) {
+          const hardcodedMap: Record<string, string> = {
+            'firstname': 'firstName',
+            'lastname': 'lastName',
+            'phone': 'phone',
+            'email': 'email'
+          };
+
+          if (hardcodedMap[propertyName]) {
+            wixField = hardcodedMap[propertyName];
+            direction = 'bidirectional (fallback)';
+            logger.info(`📋 Using fallback mapping for ${propertyName} → ${wixField}`);
+          } else {
+            // Unknown field - skip
+            logger.info(`🛡️ Unknown property ${propertyName}, no mapping found, skipping`);
+            shouldSync = false;
+          }
+        }
+
+        // Perform the update if conditions are met
+        if (shouldSync && wixField && propertyValue !== null && propertyValue !== undefined) {
+          let updateValue = propertyValue;
+
+          // Basic trim for string values
+          if (typeof updateValue === 'string') {
+            updateValue = updateValue.trim();
+          }
+
+          const updateData: Record<string, any> = { [wixField]: updateValue };
+
+          logger.info(`🔄 Updating Wix contact ${syncRecord.wixContactId}: ${wixField} = ${updateValue} (${direction})`);
+
           try {
-            // Limit auto-discovery to prevent abuse
-            const currentMappings = (await this.mappingService.getFieldMapping(connection.id)).mappings;
-            const customFieldsCount = currentMappings.filter(m => !m.isEssential).length;
+            await this.wixService.updateContact(connection.id, syncRecord.wixContactId, updateData);
 
-            if (customFieldsCount >= 50) {
-              logger.info(`🛡️ Max custom fields reached (50), skipping auto-discovery for: ${propertyName}`);
-              continue;
-            }
+            await prisma.contactSync.update({
+              where: { id: syncRecord.id },
+              data: { lastSyncedAt: new Date() }
+            });
 
-            mapping = await this.mappingService.autoDiscoverHubSpotField(
-              connection.id,
+            logger.info('✅ HubSpot event synced to Wix', {
+              objectId,
+              subscriptionType,
               propertyName,
-              propertyValue
-            );
-          } catch (err) {
-            logger.error('Auto-discovery failed', err);
-            continue;
+              wixField,
+              direction
+            });
+          } catch (updateError) {
+            logger.error(`❌ Failed to update Wix contact: ${updateError}`);
+            // Don't throw, continue to next event
           }
-        }
-
-        // SAFEGUARD 8: Check direction BEFORE updating
-        if (!mapping) {
-          logger.debug(`No mapping found for ${propertyName}, skipping`);
-          continue;
-        }
-
-        if (!mapping.isActive) {
-          logger.debug(`Mapping for ${propertyName} is inactive, skipping`);
-          continue;
-        }
-
-        if (mapping.direction === 'wix_to_hubspot') {
-          logger.info(`🛡️ Skipping ${propertyName} - direction is 'wix_to_hubspot' (only Wix→HubSpot allowed)`);
-          continue;
-        }
-
-        // SAFEGUARD 9: Apply transform safely
-        let updateValue = propertyValue;
-        if (mapping.transform && typeof updateValue === 'string') {
-          try {
-            switch (mapping.transform) {
-              case 'trim':
-                updateValue = updateValue.trim();
-                break;
-              case 'lowercase':
-                updateValue = updateValue.toLowerCase();
-                break;
-              case 'uppercase':
-                updateValue = updateValue.toUpperCase();
-                break;
-              case 'email':
-                updateValue = updateValue.toLowerCase().trim();
-                break;
-            }
-          } catch (err) {
-            logger.warn(`Transform failed for ${propertyName}, using original value`, err);
-          }
-        }
-
-        // SAFEGUARD 10: Update Wix contact with error handling
-        const updateData: Record<string, any> = { [mapping.wixField]: updateValue };
-
-        try {
-          logger.info(`🔄 Updating Wix contact ${syncRecord.wixContactId}: ${mapping.wixField} = ${updateValue} (direction: ${mapping.direction})`);
-
-          await this.wixService.updateContact(connection.id, syncRecord.wixContactId, updateData);
-
-          // Update sync record timestamp
-          await prisma.contactSync.update({
-            where: { id: syncRecord.id },
-            data: { lastSyncedAt: new Date() }
-          });
-
-          logger.info('✅ HubSpot event synced to Wix', {
-            objectId,
-            subscriptionType,
-            hubSpotProperty: propertyName,
-            wixField: mapping.wixField,
-            direction: mapping.direction
-          });
-        } catch (updateError) {
-          logger.error(`Failed to update Wix contact: ${updateError}`);
-          // Don't throw - continue to next event
+        } else {
+          logger.debug(`Skipping update for ${propertyName} - shouldSync: ${shouldSync}, wixField: ${wixField}`);
         }
       }
 
       res.status(200).send('OK');
     } catch (error) {
       logger.error('❌ Error processing HubSpot webhook', error);
-      // Always return 200 to prevent HubSpot from retrying
-      res.status(200).send('OK');
+      res.status(500).json({ error: 'Failed to process HubSpot webhook' });
     }
   };
 }

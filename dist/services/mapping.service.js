@@ -34,6 +34,42 @@ class MappingService {
         });
         console.log(`[MappingService] Created ${defaultMappings.length} essential mappings`);
     }
+    async autoDiscoverHubSpotField(connectionId, hubSpotProperty, propertyValue) {
+        const current = await this.getFieldMapping(connectionId);
+        // Check if already exists
+        const existing = current.mappings.find(m => m.hubSpotProperty === hubSpotProperty);
+        if (existing)
+            return existing;
+        // Convert HubSpot property to Wix field name
+        let wixField = hubSpotProperty;
+        // Remove custom. prefix if present
+        wixField = wixField.replace(/^custom\./, '');
+        // Convert snake_case to camelCase
+        wixField = wixField.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+        // Validate
+        const isValid = /^[a-zA-Z][a-zA-Z0-9_]*$/.test(wixField);
+        if (!isValid || propertyValue === null || propertyValue === undefined) {
+            return null;
+        }
+        const newMapping = {
+            wixField,
+            hubSpotProperty,
+            direction: 'bidirectional',
+            transform: typeof propertyValue === 'string' ? 'trim' : undefined,
+            isEssential: false,
+            isActive: true,
+            discoveredAt: new Date(),
+            lastSeenAt: new Date(),
+        };
+        // Save to database
+        const updatedMappings = [...current.mappings, newMapping];
+        await database_1.prisma.fieldMapping.update({
+            where: { connectionId },
+            data: { mappings: updatedMappings }
+        });
+        console.log(`[MappingService] Auto-discovered HubSpot field: ${hubSpotProperty} → ${wixField}`);
+        return newMapping;
+    }
     async getFieldMapping(connectionId) {
         const mapping = await database_1.prisma.fieldMapping.findUnique({
             where: { connectionId }

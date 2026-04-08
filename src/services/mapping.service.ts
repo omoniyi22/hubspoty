@@ -3,7 +3,7 @@ import { FieldMappingConfig, FieldMappingRule, WixContact } from '../types';
 
 export class MappingService {
   private static instance: MappingService;
-  
+
   // Essential fields that MUST exist for every connection
   private readonly ESSENTIAL_MAPPINGS: Omit<FieldMappingRule, 'isEssential' | 'discoveredAt' | 'lastSeenAt' | 'isActive'>[] = [
     { wixField: 'email', hubSpotProperty: 'email', direction: 'bidirectional', transform: 'email' },
@@ -21,7 +21,7 @@ export class MappingService {
 
   async initializeDefaultMappings(connectionId: string): Promise<void> {
     console.log(`[MappingService] Initializing default mappings for connection: ${connectionId}`);
-    
+
     const defaultMappings: FieldMappingRule[] = this.ESSENTIAL_MAPPINGS.map(mapping => ({
       ...mapping,
       isEssential: true,
@@ -39,6 +39,54 @@ export class MappingService {
     console.log(`[MappingService] Created ${defaultMappings.length} essential mappings`);
   }
 
+  async autoDiscoverHubSpotField(
+    connectionId: string,
+    hubSpotProperty: string,
+    propertyValue: any
+  ): Promise<FieldMappingRule | null> {
+    const current = await this.getFieldMapping(connectionId);
+
+    // Check if already exists
+    const existing = current.mappings.find(m => m.hubSpotProperty === hubSpotProperty);
+    if (existing) return existing;
+
+    // Convert HubSpot property to Wix field name
+    let wixField = hubSpotProperty;
+
+    // Remove custom. prefix if present
+    wixField = wixField.replace(/^custom\./, '');
+
+    // Convert snake_case to camelCase
+    wixField = wixField.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+
+    // Validate
+    const isValid = /^[a-zA-Z][a-zA-Z0-9_]*$/.test(wixField);
+    if (!isValid || propertyValue === null || propertyValue === undefined) {
+      return null;
+    }
+
+    const newMapping: FieldMappingRule = {
+      wixField,
+      hubSpotProperty,
+      direction: 'bidirectional',
+      transform: typeof propertyValue === 'string' ? 'trim' : undefined,
+      isEssential: false,
+      isActive: true,
+      discoveredAt: new Date(),
+      lastSeenAt: new Date(),
+    };
+
+    // Save to database
+    const updatedMappings = [...current.mappings, newMapping];
+    await prisma.fieldMapping.update({
+      where: { connectionId },
+      data: { mappings: updatedMappings as any }
+    });
+
+    console.log(`[MappingService] Auto-discovered HubSpot field: ${hubSpotProperty} → ${wixField}`);
+    return newMapping;
+  }
+
   async getFieldMapping(connectionId: string): Promise<FieldMappingConfig> {
     const mapping = await prisma.fieldMapping.findUnique({
       where: { connectionId }
@@ -53,14 +101,14 @@ export class MappingService {
   }
 
   async updateMappingRules(
-    connectionId: string, 
+    connectionId: string,
     updates: Array<{ wixField: string; direction?: string; transform?: string | null; isActive?: boolean }>
   ): Promise<void> {
     const current = await this.getFieldMapping(connectionId);
-    
+
     const mappingMap = new Map<string, FieldMappingRule>();
     current.mappings.forEach(m => mappingMap.set(m.wixField, m));
-    
+
     for (const update of updates) {
       const existing: any = mappingMap.get(update.wixField);
       if (existing) {
@@ -77,24 +125,24 @@ export class MappingService {
         mappingMap.set(update.wixField, existing);
       }
     }
-    
+
     await prisma.fieldMapping.update({
       where: { connectionId },
       data: { mappings: Array.from(mappingMap.values()) as any }
     });
-    
+
     console.log(`[MappingService] Updated ${updates.length} mapping rules`);
   }
 
   async discoverAndAddFields(
-    connectionId: string, 
+    connectionId: string,
     wixContact: WixContact
   ): Promise<FieldMappingRule[]> {
     const current = await this.getFieldMapping(connectionId);
     const existingFields = new Set(current.mappings.map(m => m.wixField));
-    
+
     const newMappings: FieldMappingRule[] = [];
-    
+
     // Fields to ALWAYS include (the essential ones are already there)
     // Only discover new fields that are simple string/number values
     const wixFields = Object.keys(wixContact).filter(key => {
@@ -108,15 +156,15 @@ export class MappingService {
       const hasValue = value !== null && value !== undefined && value !== '';
       // Exclude objects and arrays
       const isNotObject = typeof value !== 'object';
-      
+
       return isValidType && hasValue && isNotObject && !excludedFields.includes(key);
     });
-    
+
     for (const field of wixFields) {
       if (!existingFields.has(field)) {
         // Map common Wix field names to HubSpot property names
         let hubSpotProperty = field;
-        
+
         // Common field mappings
         const fieldMappings: Record<string, string> = {
           'firstName': 'firstname',
@@ -134,21 +182,21 @@ export class MappingService {
           'phone': 'phone',
           'email': 'email',
         };
-        
+
         if (fieldMappings[field]) {
           hubSpotProperty = fieldMappings[field];
         } else {
           // Convert camelCase to snake_case for HubSpot
           hubSpotProperty = field.replace(/([A-Z])/g, '_$1').toLowerCase();
         }
-        
+
         // Validate HubSpot property name
         const isValidPropertyName = /^[a-zA-Z][a-zA-Z0-9_]*$/.test(hubSpotProperty);
         if (!isValidPropertyName) {
           console.log(`[MappingService] Skipping field ${field} - invalid HubSpot property name: ${hubSpotProperty}`);
           continue;
         }
-        
+
         const newMapping: FieldMappingRule = {
           wixField: field,
           hubSpotProperty,
@@ -159,7 +207,7 @@ export class MappingService {
           discoveredAt: new Date(),
           lastSeenAt: new Date(),
         };
-        
+
         newMappings.push(newMapping);
         existingFields.add(field);
       } else {
@@ -170,19 +218,19 @@ export class MappingService {
         }
       }
     }
-    
+
     if (newMappings.length > 0) {
       const updatedMappings = [...current.mappings, ...newMappings];
-      
+
       await prisma.fieldMapping.update({
         where: { connectionId },
         data: { mappings: updatedMappings as any }
       });
-      
-      console.log(`[MappingService] Discovered and added ${newMappings.length} new fields:`, 
+
+      console.log(`[MappingService] Discovered and added ${newMappings.length} new fields:`,
         newMappings.map(m => `${m.wixField} → ${m.hubSpotProperty}`));
     }
-    
+
     // Update lastSeenAt for all fields that were seen
     let needsUpdate = false;
     const updatedMappings = current.mappings.map(mapping => {
@@ -192,14 +240,14 @@ export class MappingService {
       }
       return mapping;
     });
-    
+
     if (needsUpdate && newMappings.length === 0) {
       await prisma.fieldMapping.update({
         where: { connectionId },
         data: { mappings: updatedMappings as any }
       });
     }
-    
+
     return newMappings;
   }
 
@@ -209,45 +257,45 @@ export class MappingService {
   ): Promise<Record<string, any>> {
     // Discover new fields
     await this.discoverAndAddFields(connectionId, wixContact);
-    
+
     const { mappings } = await this.getFieldMapping(connectionId);
-    
+
     const hubSpotData: Record<string, any> = {};
-    
+
     console.log(`[MappingService] Transforming Wix → HubSpot for contact ${wixContact.id}`);
-    
+
     for (const mapping of mappings) {
       // Skip inactive mappings
       if (!mapping.isActive) {
         console.log(`[MappingService] Skipping inactive field: ${mapping.wixField}`);
         continue;
       }
-      
+
       // Skip if direction doesn't include Wix → HubSpot
       if (mapping.direction !== 'wix_to_hubspot' && mapping.direction !== 'bidirectional') {
         console.log(`[MappingService] Skipping field ${mapping.wixField} - direction is ${mapping.direction}`);
         continue;
       }
-      
+
       // Get value from Wix contact
       let value = wixContact[mapping.wixField];
-      
+
       if (value === null || value === undefined) {
         console.log(`[MappingService] Skipping field ${mapping.wixField} - no value`);
         continue;
       }
-      
+
       // Skip objects
       if (typeof value === 'object') {
         console.log(`[MappingService] Skipping field ${mapping.wixField} - value is object`);
         continue;
       }
-      
+
       // Convert to string if needed
       if (typeof value !== 'string') {
         value = String(value);
       }
-      
+
       // Apply transform
       if (mapping.transform && typeof value === 'string') {
         switch (mapping.transform) {
@@ -265,14 +313,14 @@ export class MappingService {
             break;
         }
       }
-      
+
       // Only add non-empty values
       if (value && value.length > 0) {
         hubSpotData[mapping.hubSpotProperty] = value;
         console.log(`[MappingService] Mapped ${mapping.wixField} → ${mapping.hubSpotProperty}: "${value}"`);
       }
     }
-    
+
     console.log(`[MappingService] Final HubSpot data:`, hubSpotData);
     return hubSpotData;
   }
@@ -282,31 +330,31 @@ export class MappingService {
     hubSpotContact: Record<string, any>
   ): Promise<Record<string, any>> {
     const { mappings } = await this.getFieldMapping(connectionId);
-    
+
     const wixData: Record<string, any> = {};
-    
+
     console.log(`[MappingService] Transforming HubSpot → Wix`);
-    
+
     for (const mapping of mappings) {
       // Skip inactive mappings
       if (!mapping.isActive) {
         console.log(`[MappingService] Skipping inactive field: ${mapping.hubSpotProperty}`);
         continue;
       }
-      
+
       // Skip if direction doesn't include HubSpot → Wix
       if (mapping.direction !== 'hubspot_to_wix' && mapping.direction !== 'bidirectional') {
         console.log(`[MappingService] Skipping field ${mapping.hubSpotProperty} - direction is ${mapping.direction}`);
         continue;
       }
-      
+
       // Get value from HubSpot contact
       let value = hubSpotContact[mapping.hubSpotProperty];
-      
+
       if (value === null || value === undefined) {
         continue;
       }
-      
+
       // Apply transform
       if (mapping.transform && typeof value === 'string') {
         switch (mapping.transform) {
@@ -321,13 +369,13 @@ export class MappingService {
             break;
         }
       }
-      
+
       if (value && (typeof value === 'string' ? value.length > 0 : true)) {
         wixData[mapping.wixField] = value;
         console.log(`[MappingService] Mapped ${mapping.hubSpotProperty} → ${mapping.wixField}: "${value}"`);
       }
     }
-    
+
     return wixData;
   }
 }

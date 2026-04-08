@@ -68,8 +68,24 @@ class HubSpotService {
     }
     async createContact(connectionId, contactData) {
         const accessToken = await this.getAccessToken(connectionId);
-        const response = await axios_1.default.post(`${this.baseURL}/crm/v3/objects/contacts`, { properties: contactData }, { headers: { Authorization: `Bearer ${accessToken}` } });
-        return response.data;
+        try {
+            const response = await axios_1.default.post(`${this.baseURL}/crm/v3/objects/contacts`, { properties: contactData }, { headers: { Authorization: `Bearer ${accessToken}` } });
+            return response.data;
+        }
+        catch (error) {
+            // Handle 400 - email already exists
+            if (error.response?.status === 400) {
+                const message = error.response?.data?.message || '';
+                const match = message.match(/(\d+) already has that value/);
+                if (match) {
+                    const existingContactId = match[1];
+                    console.log(`📝 Email already exists, updating existing contact: ${existingContactId}`);
+                    await this.updateContact(connectionId, existingContactId, contactData);
+                    return { id: existingContactId };
+                }
+            }
+            throw error;
+        }
     }
     async updateContact(connectionId, contactId, contactData) {
         const accessToken = await this.getAccessToken(connectionId);

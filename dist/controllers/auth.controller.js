@@ -118,14 +118,13 @@ class AuthController {
                         console.warn('Failed to revoke token (may already be invalid):', revokeError);
                     }
                 }
-                // FIX 1 & 2 & 3: Use Prisma's unset operation instead of null
                 await database_1.prisma.hubSpotConnection.update({
                     where: { wixInstanceId: instanceId },
                     data: {
                         isConnected: false,
-                        accessToken: "", // Changed from null to empty string
-                        refreshToken: "", // Changed from null to empty string
-                        expiresAt: new Date(0) // Changed from null to a past date
+                        accessToken: "",
+                        refreshToken: "",
+                        expiresAt: new Date(0)
                     }
                 });
                 console.log('HubSpot disconnected successfully');
@@ -148,12 +147,12 @@ class AuthController {
                     console.log('No active HubSpot connection found');
                     return res.json({ connected: false });
                 }
-                if (connection.expiresAt && new Date() >= connection.expiresAt) {
-                    console.log('Token expired, attempting to refresh...');
+                // Check if token is expired or about to expire (within 5 minutes)
+                const fiveMinutes = 5 * 60 * 1000;
+                const isExpiringSoon = connection.expiresAt && new Date().getTime() >= connection.expiresAt.getTime() - fiveMinutes;
+                if (isExpiringSoon) {
+                    console.log('Token expiring soon, attempting to refresh...');
                     try {
-                        // FIX 4: Convert connection.id to string if needed, but Prisma already expects string
-                        // The error was because connectionId was typed as number but should be string
-                        // Since connection.id is already a string (cuid), we pass it directly
                         const refreshed = await this.refreshAccessToken(connection.id, connection.refreshToken);
                         if (refreshed) {
                             const updatedConnection = await database_1.prisma.hubSpotConnection.findUnique({
@@ -168,10 +167,28 @@ class AuthController {
                                 });
                             }
                         }
+                        else {
+                            // Refresh failed - mark as disconnected and require re-auth
+                            await database_1.prisma.hubSpotConnection.update({
+                                where: { wixInstanceId: instanceId },
+                                data: { isConnected: false }
+                            });
+                            return res.json({
+                                connected: false,
+                                error: 'Token expired. Please re-authorize HubSpot connection.'
+                            });
+                        }
                     }
                     catch (refreshError) {
                         console.error('Token refresh failed:', refreshError);
-                        return res.json({ connected: false, error: 'Token expired and refresh failed' });
+                        await database_1.prisma.hubSpotConnection.update({
+                            where: { wixInstanceId: instanceId },
+                            data: { isConnected: false }
+                        });
+                        return res.json({
+                            connected: false,
+                            error: 'Token refresh failed. Please re-authorize HubSpot connection.'
+                        });
                     }
                 }
                 console.log('HubSpot connection is active for portal:', connection.hubSpotPortalId);
@@ -187,7 +204,6 @@ class AuthController {
                 res.status(500).json({ error: 'Failed to check connection status' });
             }
         };
-        // FIX 5: Change connectionId type from number to string (since Prisma uses cuid strings)
         this.refreshAccessToken = async (connectionId, refreshToken) => {
             try {
                 console.log('Refreshing HubSpot access token...');
@@ -203,15 +219,61 @@ class AuthController {
                     data: {
                         accessToken: tokenData.access_token,
                         refreshToken: tokenData.refresh_token || refreshToken,
-                        expiresAt: new Date(Date.now() + tokenData.expires_in * 1000)
+                        expiresAt: new Date(Date.now() + tokenData.expires_in * 1000),
+                        isConnected: true
                     }
                 });
                 console.log('Access token refreshed successfully');
                 return true;
             }
             catch (error) {
-                console.error('Failed to refresh access token:', error);
+                console.error('Failed to refresh access token:', error.message);
+                // Check if it's a client mismatch error
+                if (error.message?.includes('refresh token was not issued to this client')) {
+                    console.error('⚠️ Client ID/Secret mismatch detected. User must re-authorize.');
+                    // Mark connection as disconnected
+                    await database_1.prisma.hubSpotConnection.update({
+                        where: { id: connectionId },
+                        data: { isConnected: false }
+                    });
+                }
                 return false;
+            }
+        };
+        // Add this new endpoint to check token health
+        this.checkTokenHealth = async (req, res) => {
+            const { instanceId } = req.params;
+            try {
+                const connection = await database_1.prisma.hubSpotConnection.findFirst({
+                    where: { wixInstanceId: instanceId, isConnected: true }
+                });
+                if (!connection) {
+                    return res.json({ healthy: false, reason: 'No active connection found' });
+                }
+                // Try to refresh token
+                try {
+                    const hubspotService = hubspot_service_1.HubSpotService.getInstance();
+                    await hubspotService.getAccessToken(connection.id);
+                    return res.json({ healthy: true });
+                }
+                catch (error) {
+                    if (error.message?.includes('refresh token was not issued to this client')) {
+                        // Mark as disconnected
+                        await database_1.prisma.hubSpotConnection.update({
+                            where: { id: connection.id },
+                            data: { isConnected: false }
+                        });
+                        return res.json({
+                            healthy: false,
+                            reason: 'Token invalid. Please re-authorize HubSpot connection.'
+                        });
+                    }
+                    return res.json({ healthy: false, reason: error.message });
+                }
+            }
+            catch (error) {
+                console.error('Error checking token health:', error);
+                res.status(500).json({ error: 'Failed to check token health' });
             }
         };
     }

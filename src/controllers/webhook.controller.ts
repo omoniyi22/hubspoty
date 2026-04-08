@@ -79,7 +79,7 @@ export class WebhookController {
       return;
     }
     this.recentProcessedEvents.set(dedupeKey, Date.now());
-    setTimeout(() => this.recentProcessedEvents.delete(dedupeKey), 5000);
+    setTimeout(() => this.recentProcessedEvents.delete(dedupeKey), 10000);
 
     // Always respond immediately to avoid timeout
     res.status(200).send();
@@ -315,166 +315,184 @@ export class WebhookController {
   // ─────────────────────────────────────────────
   // PROCESS CONTACT EVENT FROM JWT WEBHOOK - WITH INFINITE LOOP PREVENTION
   // ─────────────────────────────────────────────
-  private async processContactEventFromJWT(event: any, eventData: any, eventType: 'created' | 'updated') {
-    const correlationId = uuidv4();
+private async processContactEventFromJWT(event: any, eventData: any, eventType: 'created' | 'updated') {
+  const correlationId = uuidv4();
 
-    try {
-      const instanceId = event.instanceId;
-      let contact = eventData.contact || eventData;
+  try {
+    const instanceId = event.instanceId;
+    let contact = eventData.contact || eventData;
 
-      // Extract the actual contact data
-      if (contact.updatedEvent?.currentEntity) {
-        contact = contact.updatedEvent.currentEntity;
-      }
-      if (contact.createdEvent?.currentEntity) {
-        contact = contact.createdEvent.currentEntity;
-      }
+    // Extract the actual contact data
+    if (contact.updatedEvent?.currentEntity) {
+      contact = contact.updatedEvent.currentEntity;
+    }
+    if (contact.createdEvent?.currentEntity) {
+      contact = contact.createdEvent.currentEntity;
+    }
 
-      const contactId = contact.id || contact._id;
+    const contactId = contact.id || contact._id;
 
-      // ✅ INFINITE LOOP PREVENTION: Check if this exact event was recently processed
-      const eventKey = `${instanceId}-${contactId}-${eventType}-${contact.revision || 0}`;
-      if (this.recentProcessedEvents.has(eventKey)) {
-        logger.info('🛡️ Duplicate contact event detected, skipping', { eventKey, contactId });
-        return;
-      }
-      this.recentProcessedEvents.set(eventKey, Date.now());
-      setTimeout(() => this.recentProcessedEvents.delete(eventKey), 10000);
+    // ✅ INFINITE LOOP PREVENTION: Check if this exact event was recently processed
+    const eventKey = `${instanceId}-${contactId}-${eventType}-${contact.revision || 0}`;
+    if (this.recentProcessedEvents.has(eventKey)) {
+      logger.info('🛡️ Duplicate contact event detected, skipping', { eventKey, contactId });
+      return;
+    }
+    this.recentProcessedEvents.set(eventKey, Date.now());
+    setTimeout(() => this.recentProcessedEvents.delete(eventKey), 10000);
 
-      logger.info(`🔄 Processing contact ${eventType} from JWT`, {
-        correlationId,
-        instanceId,
-        contactId,
-        revision: contact.revision,
-      });
+    logger.info(`🔄 Processing contact ${eventType} from JWT`, {
+      correlationId,
+      instanceId,
+      contactId,
+      revision: contact.revision,
+    });
 
-      const connection = await prisma.hubSpotConnection.findFirst({
-        where: { wixInstanceId: instanceId, isConnected: true },
-      });
+    const connection = await prisma.hubSpotConnection.findFirst({
+      where: { wixInstanceId: instanceId, isConnected: true },
+    });
 
-      if (!connection) {
-        logger.warn('⚠️ No active HubSpot connection', { instanceId });
-        return;
-      }
+    if (!connection) {
+      logger.warn('⚠️ No active HubSpot connection', { instanceId });
+      return;
+    }
 
-      // ✅ INFINITE LOOP PREVENTION: Check for recent HubSpot → Wix sync (would cause loop)
-      const recentHubspotToWixSync = await prisma.contactSync.findFirst({
-        where: {
+    // ✅ INFINITE LOOP PREVENTION: Check for recent HubSpot → Wix sync (would cause loop)
+    const recentHubspotToWixSync = await prisma.contactSync.findFirst({
+      where: {
+        connectionId: connection.id,
+        wixContactId: contactId,
+        lastSyncDirection: 'hubspot_to_wix',
+        lastSyncedAt: { gte: new Date(Date.now() - 60_000) },
+      },
+    });
+
+    if (recentHubspotToWixSync) {
+      logger.info('🛡️ Loop prevention: skipping — recently synced FROM HubSpot', { contactId });
+      return;
+    }
+
+    // Extract email from the correct path
+    const primaryEmail =
+      contact?.primaryInfo?.email ||
+      contact?.primaryEmail?.email ||
+      contact?.info?.primaryEmail?.email ||
+      contact?.info?.emails?.items?.find((e: any) => e.primary)?.email ||
+      contact?.info?.emails?.items?.[0]?.email ||
+      contact?.email ||
+      null;
+
+    if (!primaryEmail) {
+      logger.warn('⚠️ No email on contact — skipping sync', { contactId });
+      return;
+    }
+
+    const firstName = contact?.info?.name?.first || contact?.name?.first || null;
+    const lastName = contact?.info?.name?.last || contact?.name?.last || null;
+    const phone = contact?.primaryInfo?.phone || contact?.primaryPhone?.phone || null;
+
+    const wixContactData: WixContact = {
+      id: contactId,
+      email: primaryEmail,
+      firstName: firstName,
+      lastName: lastName,
+      phone: phone,
+      version: contact.revision || contact.version || 0,
+    };
+
+    const hubSpotData = await this.mappingService.transformWixToHubSpot(
+      connection.id,
+      wixContactData
+    );
+
+    if (!hubSpotData.email) {
+      logger.error('❌ No email after transformation');
+      return;
+    }
+
+    const existingSyncRecord = await prisma.contactSync.findUnique({
+      where: {
+        connectionId_wixContactId: {
           connectionId: connection.id,
           wixContactId: contactId,
-          lastSyncDirection: 'hubspot_to_wix',
-          lastSyncedAt: { gte: new Date(Date.now() - 60_000) },
         },
-      });
+      },
+    });
 
-      if (recentHubspotToWixSync) {
-        logger.info('🛡️ Loop prevention: skipping — recently synced FROM HubSpot', { contactId });
-        return;
-      }
+    let result;
 
-      // Extract email from the correct path
-      const primaryEmail =
-        contact?.primaryInfo?.email ||
-        contact?.primaryEmail?.email ||
-        contact?.info?.primaryEmail?.email ||
-        contact?.info?.emails?.items?.find((e: any) => e.primary)?.email ||
-        contact?.info?.emails?.items?.[0]?.email ||
-        contact?.email ||
-        null;
-
-      if (!primaryEmail) {
-        logger.warn('⚠️ No email on contact — skipping sync', { contactId });
-        return;
-      }
-
-      const firstName = contact?.info?.name?.first || contact?.name?.first || null;
-      const lastName = contact?.info?.name?.last || contact?.name?.last || null;
-      const phone = contact?.primaryInfo?.phone || contact?.primaryPhone?.phone || null;
-
-      const wixContactData: WixContact = {
-        id: contactId,
-        email: primaryEmail,
-        firstName: firstName,
-        lastName: lastName,
-        phone: phone,
-        version: contact.revision || contact.version || 0,
-      };
-
-      const hubSpotData = await this.mappingService.transformWixToHubSpot(
+    if (existingSyncRecord) {
+      logger.info(`🔄 [JWT] Updating existing HubSpot contact by ID: ${existingSyncRecord.hubSpotContactId}`);
+      await this.hubspotService.updateContact(
         connection.id,
-        wixContactData
+        existingSyncRecord.hubSpotContactId,
+        hubSpotData
       );
+      result = { id: existingSyncRecord.hubSpotContactId, isNew: false };
+    } else {
+      // ✅ Use createOrUpdateContact to handle 409 gracefully
+      logger.info(`🆕 [JWT] Creating/updating HubSpot contact for: ${primaryEmail}`);
+      result = await this.hubspotService.createOrUpdateContact(
+        connection.id,
+        primaryEmail,
+        hubSpotData
+      );
+    }
 
-      if (!hubSpotData.email) {
-        logger.error('❌ No email after transformation');
-        return;
-      }
-
-      const existingSyncRecord = await prisma.contactSync.findUnique({
-        where: {
-          connectionId_wixContactId: {
-            connectionId: connection.id,
-            wixContactId: contactId,
-          },
-        },
-      });
-
-      let result;
-
-      if (existingSyncRecord) {
-        logger.info(`🔄 [JWT] Updating existing HubSpot contact by ID: ${existingSyncRecord.hubSpotContactId}`);
-        await this.hubspotService.updateContact(
-          connection.id,
-          existingSyncRecord.hubSpotContactId,
-          hubSpotData
-        );
-        result = { id: existingSyncRecord.hubSpotContactId, isNew: false };
-      } else {
-        // ✅ Use createOrUpdateContact to handle 409 gracefully
-        logger.info(`🆕 [JWT] Creating/updating HubSpot contact for: ${primaryEmail}`);
-        result = await this.hubspotService.createOrUpdateContact(
-          connection.id,
-          primaryEmail,
-          hubSpotData
-        );
-      }
-
-      // ✅ Use upsert to avoid P2002 unique constraint errors
-      await prisma.contactSync.upsert({
-        where: {
-          connectionId_wixContactId: {
-            connectionId: connection.id,
-            wixContactId: contactId,
-          },
-        },
-        update: {
-          hubSpotContactId: result.id,
-          lastSyncedAt: new Date(),
-          lastSyncDirection: 'wix_to_hubspot',
-          syncSource: 'wix_jwt',
-          correlationId: correlationId,
-          wixVersion: contact.revision || 0,
-          updatedAt: new Date(),
-        },
-        create: {
+    // ✅ Use upsert to avoid P2002 unique constraint errors
+    await prisma.contactSync.upsert({
+      where: {
+        connectionId_wixContactId: {
           connectionId: connection.id,
           wixContactId: contactId,
-          hubSpotContactId: result.id,
-          lastSyncedAt: new Date(),
-          lastSyncDirection: 'wix_to_hubspot',
-          syncSource: 'wix_jwt',
-          correlationId: correlationId,
-          wixVersion: contact.revision || 0,
         },
-      }).catch((err: any) => {
-        if (err.code === 'P2002') {
-          logger.info('Sync record already exists, skipping upsert', { contactId, hubSpotId: result.id });
-        } else {
-          throw err;
-        }
-      });
+      },
+      update: {
+        hubSpotContactId: result.id,
+        lastSyncedAt: new Date(),
+        lastSyncDirection: 'wix_to_hubspot',
+        syncSource: 'wix_jwt',
+        correlationId: correlationId,
+        wixVersion: contact.revision || 0,
+        updatedAt: new Date(),
+      },
+      create: {
+        connectionId: connection.id,
+        wixContactId: contactId,
+        hubSpotContactId: result.id,
+        lastSyncedAt: new Date(),
+        lastSyncDirection: 'wix_to_hubspot',
+        syncSource: 'wix_jwt',
+        correlationId: correlationId,
+        wixVersion: contact.revision || 0,
+      },
+    }).catch((err: any) => {
+      if (err.code === 'P2002') {
+        logger.info('Sync record already exists, skipping upsert', { contactId, hubSpotId: result.id });
+      } else {
+        throw err;
+      }
+    });
 
-      // ✅ Create sync log but handle duplicates gracefully
+    // ✅ PREVENT DUPLICATE LOGS: Check if we just synced this contact (similar to HubSpot fix)
+    const recentWixSync = await prisma.syncLog.findFirst({
+      where: {
+        connectionId: connection.id,
+        wixContactId: contactId,
+        direction: 'wix_to_hubspot',
+        status: 'success',
+        createdAt: { gte: new Date(Date.now() - 5000) },
+      },
+    });
+
+    if (recentWixSync) {
+      logger.info('🛡️ Skipping duplicate sync log - already synced recently', { 
+        contactId, 
+        secondsAgo: (Date.now() - recentWixSync.createdAt.getTime()) / 1000 
+      });
+      // Don't create duplicate log, but continue (contact already synced)
+    } else {
+      // ✅ Create sync log only once
       await prisma.syncLog.create({
         data: {
           connectionId: connection.id,
@@ -492,32 +510,33 @@ export class WebhookController {
           logger.error('Failed to create sync log:', err);
         }
       });
-
-      logger.info(`✅ Contact ${eventType} synced from JWT`, {
-        wixContactId: contactId,
-        hubSpotContactId: result.id,
-        wasUpdate: !!existingSyncRecord,
-        isNew: result.isNew,
-      });
-
-    } catch (error) {
-      logger.error(`❌ Error processing contact ${eventType} from JWT`, error);
-
-      // Log failure but don't throw - prevent crash
-      await prisma.syncLog.create({
-        data: {
-          connectionId: 'unknown',
-          syncType: 'contact_update',
-          direction: 'wix_to_hubspot',
-          status: 'failed',
-          wixContactId: null,
-          hubSpotContactId: null,
-          correlationId: correlationId,
-          errorMessage: error instanceof Error ? error.message : 'Unknown error',
-        },
-      }).catch(() => { });
     }
+
+    logger.info(`✅ Contact ${eventType} synced from JWT`, {
+      wixContactId: contactId,
+      hubSpotContactId: result.id,
+      wasUpdate: !!existingSyncRecord,
+      isNew: result.isNew,
+    });
+
+  } catch (error) {
+    logger.error(`❌ Error processing contact ${eventType} from JWT`, error);
+
+    // Log failure but don't throw - prevent crash
+    await prisma.syncLog.create({
+      data: {
+        connectionId: 'unknown',
+        syncType: 'contact_update',
+        direction: 'wix_to_hubspot',
+        status: 'failed',
+        wixContactId: null,
+        hubSpotContactId: null,
+        correlationId: correlationId,
+        errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      },
+    }).catch(() => { });
   }
+}
 
   // ─────────────────────────────────────────────
   // HUBSPOT → WIX WEBHOOK - WITH INFINITE LOOP PREVENTION

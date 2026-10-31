@@ -3,20 +3,29 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+// src/server.ts
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
 const helmet_1 = __importDefault(require("helmet"));
 const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 const dotenv_1 = __importDefault(require("dotenv"));
-const form_controller_1 = require("./controllers/form.controller"); // ADD THIS
+dotenv_1.default.config();
+const database_1 = require("./config/database");
 const auth_controller_1 = require("./controllers/auth.controller");
 const mapping_controller_1 = require("./controllers/mapping.controller");
 const webhook_controller_1 = require("./controllers/webhook.controller");
 const sync_controller_1 = require("./controllers/sync.controller");
-dotenv_1.default.config();
+const form_controller_1 = require("./controllers/form.controller");
 const app = (0, express_1.default)();
 const PORT = process.env.PORT || 8000;
-// Middleware
+// Origin that is allowed to receive the OAuth popup postMessage.
+// Set FRONTEND_ORIGIN in your .env (e.g. https://yourwixsite.com)
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '*';
+// Needed when running behind GoDaddy Passenger / Apache / Nginx
+app.set('trust proxy', 1);
+// ============================================================
+// MIDDLEWARE
+// ============================================================
 app.use((0, helmet_1.default)());
 app.use((0, cors_1.default)());
 app.use(express_1.default.json());
@@ -24,15 +33,31 @@ app.use(express_1.default.text());
 // Rate limiting
 const limiter = (0, express_rate_limit_1.default)({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100
+    max: 100,
 });
 app.use('/api/', limiter);
-// Initialize controllers
+// ============================================================
+// INITIALIZE CONTROLLERS
+// ============================================================
 const authController = new auth_controller_1.AuthController();
 const mappingController = new mapping_controller_1.MappingController();
 const webhookController = new webhook_controller_1.WebhookController();
 const syncController = new sync_controller_1.SyncController();
-const formController = new form_controller_1.FormController(); // ADD THIS
+const formController = new form_controller_1.FormController();
+// ============================================================
+// ROOT + HEALTH CHECK
+// ============================================================
+app.get('/', (req, res) => {
+    res.json({ status: 'ok', service: 'wix-hubspot-sync' });
+});
+app.get('/health', async (req, res) => {
+    const dbOk = await (0, database_1.isDatabaseHealthy)();
+    res.status(dbOk ? 200 : 503).json({
+        status: dbOk ? 'healthy' : 'degraded',
+        database: dbOk ? 'connected' : 'disconnected',
+        timestamp: new Date().toISOString(),
+    });
+});
 // ============================================================
 // AUTH ROUTES
 // ============================================================
@@ -75,13 +100,15 @@ app.get('/auth/success', (req, res) => {
           <div class="icon">✓</div>
           <h1>Connected Successfully!</h1>
           <p>Your HubSpot account is now connected.</p>
+          <div class="countdown">Closing in <span id="countdown">2</span>s</div>
         </div>
         <script>
-          if (window.opener) window.opener.postMessage('hubspot-connected', '*');
+          if (window.opener) window.opener.postMessage('hubspot-connected', '${FRONTEND_ORIGIN}');
           let seconds = 2;
           const interval = setInterval(() => {
             seconds--;
-            document.getElementById('countdown').textContent = seconds;
+            const el = document.getElementById('countdown');
+            if (el) el.textContent = seconds;
             if (seconds <= 0) { clearInterval(interval); window.close(); }
           }, 1000);
         </script>
@@ -133,7 +160,7 @@ app.get('/auth/error', (req, res) => {
           <button onclick="window.close()">Close</button>
         </div>
         <script>
-          if (window.opener) window.opener.postMessage('hubspot-error', '*');
+          if (window.opener) window.opener.postMessage('hubspot-error', '${FRONTEND_ORIGIN}');
         </script>
       </body>
     </html>
@@ -164,6 +191,13 @@ app.post('/api/sync/hubspot-to-wix/:instanceId', syncController.manualSyncHubSpo
 app.post('/api/sync/bulk/:instanceId', syncController.bulkSync);
 app.post('/api/sync/retry/:logId', syncController.retryFailedSync);
 // ============================================================
+// FORM SUBMISSION ROUTES
+// ============================================================
+app.get('/api/forms/submissions/:instanceId', formController.getFormSubmissions);
+app.get('/api/forms/submissions/detail/:submissionId', formController.getFormSubmissionById);
+app.get('/api/forms/stats/:instanceId', formController.getFormStats);
+app.put('/api/forms/submissions/:submissionId/status', formController.updateLeadStatus);
+// ============================================================
 // WEBHOOK ROUTES
 // ============================================================
 app.post('/webhook/wix/contact-created', webhookController.handleWixWebhook);
@@ -171,19 +205,11 @@ app.post('/webhook/wix/contact-updated', webhookController.handleWixWebhook);
 app.post('/webhook/wix/form-submitted', webhookController.handleWixWebhook);
 app.post('/webhooks/hubspot/contact', webhookController.handleHubSpotWebhook);
 // ============================================================
-// HEALTH CHECK
+// 404 + ERROR HANDLING
 // ============================================================
-app.get('/api/forms/submissions/:instanceId', formController.getFormSubmissions);
-app.get('/api/forms/submissions/detail/:submissionId', formController.getFormSubmissionById);
-app.get('/api/forms/stats/:instanceId', formController.getFormStats);
-app.put('/api/forms/submissions/:submissionId/status', formController.updateLeadStatus);
-app.get('/health', (req, res) => {
-    console.log("hello world");
-    res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not found' });
 });
-// ============================================================
-// ERROR HANDLING MIDDLEWARE
-// ============================================================
 app.use((err, req, res, next) => {
     console.error(err.stack);
     res.status(500).json({ error: 'Something went wrong!' });
@@ -191,12 +217,17 @@ app.use((err, req, res, next) => {
 // ============================================================
 // START SERVER
 // ============================================================
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`\n📋 Sync Logs API: http://localhost:${PORT}/api/sync/logs/:instanceId`);
-    console.log(`📊 Sync Status API: http://localhost:${PORT}/api/sync/status/:instanceId`);
-    console.log(`🗺️ Field Mapping API: http://localhost:${PORT}/api/mapping/:instanceId`);
-});
+async function start() {
+    // Connect to the database first and log the result
+    await (0, database_1.connectDatabase)();
+    app.listen(PORT, () => {
+        console.log(`🚀 Server running on port ${PORT}`);
+        console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`\n📋 Sync Logs API: http://localhost:${PORT}/api/sync/logs/:instanceId`);
+        console.log(`📊 Sync Status API: http://localhost:${PORT}/api/sync/status/:instanceId`);
+        console.log(`🗺️ Field Mapping API: http://localhost:${PORT}/api/mapping/:instanceId`);
+    });
+}
+start();
 exports.default = app;
 //# sourceMappingURL=server.js.map

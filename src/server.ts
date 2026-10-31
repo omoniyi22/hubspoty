@@ -1,16 +1,18 @@
+// src/server.ts
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 
+dotenv.config();
+
+import { connectDatabase, isDatabaseHealthy } from './config/database';
 import { AuthController } from './controllers/auth.controller';
 import { MappingController } from './controllers/mapping.controller';
 import { WebhookController } from './controllers/webhook.controller';
 import { SyncController } from './controllers/sync.controller';
 import { FormController } from './controllers/form.controller';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -53,8 +55,13 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'wix-hubspot-sync' });
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  const dbOk = await isDatabaseHealthy();
+  res.status(dbOk ? 200 : 503).json({
+    status: dbOk ? 'healthy' : 'degraded',
+    database: dbOk ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ============================================================
@@ -226,12 +233,19 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 // ============================================================
 // START SERVER
 // ============================================================
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`\n📋 Sync Logs API: http://localhost:${PORT}/api/sync/logs/:instanceId`);
-  console.log(`📊 Sync Status API: http://localhost:${PORT}/api/sync/status/:instanceId`);
-  console.log(`🗺️ Field Mapping API: http://localhost:${PORT}/api/mapping/:instanceId`);
-});
+async function start() {
+  // Connect to the database first and log the result
+  await connectDatabase();
+
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
+    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`\n📋 Sync Logs API: http://localhost:${PORT}/api/sync/logs/:instanceId`);
+    console.log(`📊 Sync Status API: http://localhost:${PORT}/api/sync/status/:instanceId`);
+    console.log(`🗺️ Field Mapping API: http://localhost:${PORT}/api/mapping/:instanceId`);
+  });
+}
+
+start();
 
 export default app;

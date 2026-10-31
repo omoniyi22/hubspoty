@@ -3,19 +3,28 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
-import { FormController } from './controllers/form.controller';  // ADD THIS
 
 import { AuthController } from './controllers/auth.controller';
 import { MappingController } from './controllers/mapping.controller';
 import { WebhookController } from './controllers/webhook.controller';
 import { SyncController } from './controllers/sync.controller';
+import { FormController } from './controllers/form.controller';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-// Middleware
+// Origin that is allowed to receive the OAuth popup postMessage.
+// Set FRONTEND_ORIGIN in your .env (e.g. https://yourwixsite.com)
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '*';
+
+// Needed when running behind GoDaddy Passenger / Apache / Nginx
+app.set('trust proxy', 1);
+
+// ============================================================
+// MIDDLEWARE
+// ============================================================
 app.use(helmet());
 app.use(cors());
 app.use(express.json());
@@ -24,16 +33,29 @@ app.use(express.text());
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100
+  max: 100,
 });
 app.use('/api/', limiter);
 
-// Initialize controllers
+// ============================================================
+// INITIALIZE CONTROLLERS
+// ============================================================
 const authController = new AuthController();
 const mappingController = new MappingController();
 const webhookController = new WebhookController();
 const syncController = new SyncController();
-const formController = new FormController();  // ADD THIS
+const formController = new FormController();
+
+// ============================================================
+// ROOT + HEALTH CHECK
+// ============================================================
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', service: 'wix-hubspot-sync' });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
 
 // ============================================================
 // AUTH ROUTES
@@ -78,13 +100,15 @@ app.get('/auth/success', (req, res) => {
           <div class="icon">✓</div>
           <h1>Connected Successfully!</h1>
           <p>Your HubSpot account is now connected.</p>
+          <div class="countdown">Closing in <span id="countdown">2</span>s</div>
         </div>
         <script>
-          if (window.opener) window.opener.postMessage('hubspot-connected', '*');
+          if (window.opener) window.opener.postMessage('hubspot-connected', '${FRONTEND_ORIGIN}');
           let seconds = 2;
           const interval = setInterval(() => {
             seconds--;
-            document.getElementById('countdown').textContent = seconds;
+            const el = document.getElementById('countdown');
+            if (el) el.textContent = seconds;
             if (seconds <= 0) { clearInterval(interval); window.close(); }
           }, 1000);
         </script>
@@ -137,7 +161,7 @@ app.get('/auth/error', (req, res) => {
           <button onclick="window.close()">Close</button>
         </div>
         <script>
-          if (window.opener) window.opener.postMessage('hubspot-error', '*');
+          if (window.opener) window.opener.postMessage('hubspot-error', '${FRONTEND_ORIGIN}');
         </script>
       </body>
     </html>
@@ -172,6 +196,14 @@ app.post('/api/sync/bulk/:instanceId', syncController.bulkSync);
 app.post('/api/sync/retry/:logId', syncController.retryFailedSync);
 
 // ============================================================
+// FORM SUBMISSION ROUTES
+// ============================================================
+app.get('/api/forms/submissions/:instanceId', formController.getFormSubmissions);
+app.get('/api/forms/submissions/detail/:submissionId', formController.getFormSubmissionById);
+app.get('/api/forms/stats/:instanceId', formController.getFormStats);
+app.put('/api/forms/submissions/:submissionId/status', formController.updateLeadStatus);
+
+// ============================================================
 // WEBHOOK ROUTES
 // ============================================================
 app.post('/webhook/wix/contact-created', webhookController.handleWixWebhook);
@@ -180,24 +212,12 @@ app.post('/webhook/wix/form-submitted', webhookController.handleWixWebhook);
 app.post('/webhooks/hubspot/contact', webhookController.handleHubSpotWebhook);
 
 // ============================================================
-// HEALTH CHECK
+// 404 + ERROR HANDLING
 // ============================================================
-
-
-app.get('/api/forms/submissions/:instanceId', formController.getFormSubmissions);
-app.get('/api/forms/submissions/detail/:submissionId', formController.getFormSubmissionById);
-app.get('/api/forms/stats/:instanceId', formController.getFormStats);
-app.put('/api/forms/submissions/:submissionId/status', formController.updateLeadStatus);
-
-
-app.get('/health', (req, res) => {
-  console.log("hello world");
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not found' });
 });
 
-// ============================================================
-// ERROR HANDLING MIDDLEWARE
-// ============================================================
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
   console.error(err.stack);
   res.status(500).json({ error: 'Something went wrong!' });
